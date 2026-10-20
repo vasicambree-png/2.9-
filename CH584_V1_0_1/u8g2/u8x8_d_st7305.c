@@ -1214,7 +1214,7 @@ static const uint8_t u8x8_d_st7306_300x400_init_seq[] = {
     // 10. HPM Gate EQ Control (10 bytes)
     U8X8_C(0xB3),
     U8X8_A8(0xE5, 0xF6, 0x17, 0x77, 0x77, 0x77, 0x77, 0x77),
-    U8X8_CA(0x77, 0x71),   // 剩余两个字节
+    U8X8_A(0x77), U8X8_A(0x71), /* final two B3 arguments, not a new command */
 
     // 11. LPM Gate EQ Control (8 bytes)
     U8X8_C(0xB4),
@@ -1222,7 +1222,7 @@ static const uint8_t u8x8_d_st7306_300x400_init_seq[] = {
 
     // 12. Gate Timing Control (0x62 – non‑standard, 3 bytes)
     U8X8_C(0x62),
-    U8X8_CAA(0x32, 0x03, 0x1F),
+    U8X8_A(0x32), U8X8_A(0x03), U8X8_A(0x1F),
 
     // 13. Source EQ Enable
     U8X8_CA(0xB7, 0x13),
@@ -1292,11 +1292,11 @@ static const u8x8_display_info_t u8x8_st7306_300x400_display_info =
     /* i2c_bus_clock_100kHz = */ 80,
     /* data_setup_time_ns = */ 15,
     /* write_pulse_width_ns = */ 70,
-    /* tile_width = */75 ,         /* 300/8 = 37.5 -> 向上取整为 38 */
+    /* tile_width = */ 75,         /* 600 virtual bits / 8; 2 bits / physical pixel */
     /* tile_height = */ 50,        /* 400/8 = 50 */
     /* default_x_offset = */ 0,
     /* flipmode_x_offset = */ 0,
-    /* pixel_width = */ 600,
+    /* pixel_width = */ 600,       /* virtual: physical 300, two bits/pixel */
     /* pixel_height = */ 400
 };
 
@@ -1307,7 +1307,7 @@ uint8_t u8x8_d_st7306_300x400(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *
     uint16_t x, y;
     uint8_t c;
     uint8_t *ptr=NULL;
-    static uint8_t date_temp[600];  /* 38 tiles * 8 = 304 字节 */
+    static uint8_t date_temp[600];  /* 75 tiles * 8 = 600 bytes maximum */
 
     switch (msg)
     {
@@ -1322,19 +1322,19 @@ uint8_t u8x8_d_st7306_300x400(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *
 
     case U8X8_MSG_DISPLAY_SET_POWER_SAVE:
         if (arg_int == 0)
-            u8x8_cad_SendSequence(u8x8, u8x8_d_st7305_122x250_powersave0_seq);
+            u8x8_cad_SendSequence(u8x8, u8x8_d_st7306_300x400_powersave0_seq);
         else
-            u8x8_cad_SendSequence(u8x8, u8x8_d_st7305_122x250_powersave1_seq);
+            u8x8_cad_SendSequence(u8x8, u8x8_d_st7306_300x400_powersave1_seq);
         break;
     case U8X8_MSG_DISPLAY_SET_FLIP_MODE:
         if (arg_int == 0)
         {
-            u8x8_cad_SendSequence(u8x8, u8x8_d_st7305_122x250_flip0_seq);
+            u8x8_cad_SendSequence(u8x8, u8x8_d_st7306_300x400_flip0_seq);
             u8x8->x_offset = u8x8->display_info->default_x_offset;
         }
         else
         {
-            u8x8_cad_SendSequence(u8x8, u8x8_d_st7305_122x250_flip1_seq);
+            u8x8_cad_SendSequence(u8x8, u8x8_d_st7306_300x400_flip1_seq);
             u8x8->x_offset = u8x8->display_info->flipmode_x_offset;
         }
         break;
@@ -1361,9 +1361,6 @@ uint8_t u8x8_d_st7306_300x400(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *
         memset(date_temp, 0x00, sizeof(date_temp));
 
         u8x8_cad_StartTransfer(u8x8);
-
-
-        u8x8_cad_StartTransfer(u8x8);
         u8x8_cad_SendCmd(u8x8, 0x2A);
         u8x8_cad_SendArg(u8x8, 0x05);
         u8x8_cad_SendArg(u8x8, 0x36);
@@ -1378,7 +1375,11 @@ uint8_t u8x8_d_st7306_300x400(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *
         uint16_t seg_len = c * 2;           // 每段字节数（宽度/4）
         uint16_t total_bytes = c * 8;       // 总发送字节数（必须 ≤ 600）
 
-        // 仅清零需要的部分
+        /* 75 tiles * 8 = 600 bytes. Guard partial-area transmissions. */
+        if (total_bytes > sizeof(date_temp)) {
+            u8x8_cad_EndTransfer(u8x8);
+            return 0;
+        }
         memset(date_temp, 0x00, total_bytes);
 
         // 3. 将循环变量改为 uint16_t
@@ -1418,6 +1419,7 @@ uint8_t u8x8_d_st7306_300x400(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *
 //                   date_temp[126+i/4] |= conTable[(ptr[i]>>6)&0x03];
 //               }
 //               u8x8_cad_SendData(u8x8, 168, date_temp);
+        u8x8_cad_EndTransfer(u8x8);
         break;
     }
 
