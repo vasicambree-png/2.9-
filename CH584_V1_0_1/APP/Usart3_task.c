@@ -282,6 +282,11 @@ void screen_reset_display_init(uint8_t reset_enabled, uint8_t reset_cause)
 {
     /* S2 is hardware RST. Do not repurpose or poll PB23 as a GPIO key. */
     screen_startup_init(&screen_startup, reset_enabled, reset_cause == RST_FLAG_MR);
+#if SCREEN_PANEL_ST7306_42
+    /* Standalone 4.2-inch bring-up: show geometry test after normal POR,
+     * without requiring a baseboard UART frame or S2 reset press. */
+    screen_startup_request_artwork(&screen_startup);
+#endif
     test_dirty = screen_startup.test;
     if (test_dirty) dis_flag_cnt = 1u;
 }
