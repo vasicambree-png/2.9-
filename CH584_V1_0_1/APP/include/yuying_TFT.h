@@ -5,6 +5,22 @@
 #include "u8g2.h"
 #include "CONFIG.h"
 
+/* 4.2-inch ST7306 bring-up profile. Set to 0 to retain 2.9-inch ST7305. */
+#ifndef SCREEN_PANEL_ST7306_42
+#define SCREEN_PANEL_ST7306_42 1
+#endif
+
+/* ST7306 packs two horizontal virtual bits into each physical pixel.
+ * With U8G2_R3 its framebuffer coordinates are 400 x 600, while the
+ * real screen is 400 x 300 in landscape orientation. */
+#if SCREEN_PANEL_ST7306_42
+#define SCREEN_PHYSICAL_WIDTH  400u
+#define SCREEN_PHYSICAL_HEIGHT 300u
+#else
+#define SCREEN_PHYSICAL_WIDTH  384u
+#define SCREEN_PHYSICAL_HEIGHT 168u
+#endif
+
 #define DC_CMD          GPIOA_ResetBits(GPIO_Pin_2);
 #define DC_DATA         GPIOA_SetBits(GPIO_Pin_2);
 #define CS_LOW          GPIOA_ResetBits(GPIO_Pin_12);
@@ -12,8 +28,13 @@
 #define RST_LOW         GPIOA_ResetBits(GPIO_Pin_3);
 #define RST_HIGH        GPIOA_SetBits(GPIO_Pin_3);
 
-#define SCREEN_WIDTH    384  //定义 屏幕的宽度
-#define SCREEN_HEIGHT   168  //定义 屏幕的高度
+#if SCREEN_PANEL_ST7306_42
+#define SCREEN_WIDTH    400  /* U8g2 logical width after R3 */
+#define SCREEN_HEIGHT   600  /* U8g2 virtual height after R3 */
+#else
+#define SCREEN_WIDTH    384
+#define SCREEN_HEIGHT   168
+#endif
 #define POS_X           20   //定义 菜单x坐标起始位置
 #define POS_Y           24   //定义 菜单y坐标起始位置
 #define MENU_WIDTH      64   //定义 每条菜单的宽度
