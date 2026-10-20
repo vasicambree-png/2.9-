@@ -47,6 +47,7 @@
 
 
 #include "u8x8.h"
+#include "ui_boot_assets.h"
 #include <string.h>
 
 static const uint8_t u8x8_d_st7305_122x250_powersave0_seq[] = {
@@ -999,8 +1000,8 @@ static const uint8_t st7305_yuying_168x384_init_seq[] = {
     // HPM
     U8X8_C(0x38),
 
-    // DISPLAY ON
-    U8X8_C(0x29),
+    // Keep display off until initialization has filled the startup image.
+    U8X8_C(0x28),
 
     U8X8_C(0x20),
 
@@ -1033,6 +1034,26 @@ static const u8x8_display_info_t u8x8_st7305_168x384_yuying_display_info = {
         /* pixel_height = */ 384
     };
 
+/* Repeatable production-test image. Transfer through RAM for SPI DMA. */
+void u8x8_st7305_yuying_send_boot(u8x8_t *u8x8)
+{
+    static uint8_t chunk[168];
+    u8x8_cad_StartTransfer(u8x8);
+    u8x8_cad_SendCmd(u8x8, 0x2A);
+    u8x8_cad_SendArg(u8x8, 0x17);
+    u8x8_cad_SendArg(u8x8, 0x24);
+    u8x8_cad_SendCmd(u8x8, 0x2B);
+    u8x8_cad_SendArg(u8x8, 0x00);
+    u8x8_cad_SendArg(u8x8, 0xBF);
+    u8x8_cad_SendCmd(u8x8, 0x2C);
+    for (uint16_t offset = 0; offset < sizeof(ui_boot_st7305); offset += sizeof(chunk))
+    {
+        memcpy(chunk, ui_boot_st7305 + offset, sizeof(chunk));
+        u8x8_cad_SendData(u8x8, sizeof(chunk), chunk);
+    }
+    u8x8_cad_EndTransfer(u8x8);
+}
+
 uint8_t u8x8_d_st7305_168x384_yuying(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr)
 {
     uint16_t x, y;
@@ -1044,6 +1065,7 @@ uint8_t u8x8_d_st7305_168x384_yuying(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int,
     case U8X8_MSG_DISPLAY_INIT:
         u8x8_d_helper_display_init(u8x8);
         u8x8_cad_SendSequence(u8x8, st7305_yuying_168x384_init_seq);
+        /* Stay off: background MCU power cycles must never show the logo. */
         break;
     case U8X8_MSG_DISPLAY_SETUP_MEMORY:
         u8x8_d_helper_display_setup_memory(u8x8, &u8x8_st7305_168x384_yuying_display_info);

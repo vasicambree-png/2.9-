@@ -1,4 +1,4 @@
-﻿#ifndef YUYING_TFT_H
+#ifndef YUYING_TFT_H
 #define YUYING_TFT_H
 
 
@@ -106,15 +106,28 @@ typedef struct
 
 }data_addr1;
 
+/* ★★★ V1_0_10：组网测试页一次显示**三个测试地址**的全套结果。
+   ------------------------------------------------------------------
+   原来的字段（xuhao_num/text_host_addr/text_cnt/bl_numl）只描述"当前正在测的
+   那一个地址"，所以屏上只能看到一行、而且测完就被 STM32 复位，
+   根本没法统计三个地址的结果。现在 STM32 一次把三组 (地址, 次数, 成功数)
+   全发下来，屏端整页排版、一眼看全。**两侧必须同版本烧写。** */
 typedef struct  {
-    uint16_t xuhao_num;  //索引序号
-    uint16_t  now_host_addr;
-    uint16_t  text_host_addr;
-    uint16_t  text_cnt;
-    uint16_t  bl_numl;
-    uint16_t  net_flag;
+    uint16_t now_host_addr;   /* 本机地址（台号） */
+    uint16_t net_flag;        /* 组网状态，见 NET_FLAG_xxx */
+    uint16_t cur_index;       /* 正在测试的地址序号 0~2（测完=3） */
+    uint16_t addr[3];         /* 三个测试地址 */
+    uint16_t cnt[3];          /* 各自的已测次数（0~10） */
+    uint16_t succ[3];         /* 各自的成功次数（0~10） */
     //配套回调函数
 }data_addr2;
+
+/* net_flag 取值（与 STM32 LoraPro.h 的 CRfNetStatus 一一对应）：
+     0 = 空闲：显示"开始组网 / 返回"选择页
+     1~3 = 组网进行中：显示实时结果 + 底部"组网进行中"
+     4 = 组网完成：显示最终结果 + 底部"重新组网 / 返回"（★ V1_0_10 新增，不再自动返回） */
+#define NET_FLAG_IDLE    0u
+#define NET_FLAG_DONE    4u
 
 typedef struct  {
     uint8_t   pass_buf[4];  //索引序号
@@ -231,7 +244,7 @@ void return_main_Control();
 /* 功能清单新增页面（契约 §1.2 / §1.4）：菜单第 2 项「设备绑定」、第 6 项「信息汇总」 */
 void binding_Control(void);
 void summary_Control(void);
-void networking_Control2();
+/* ★ V1_0_10：networking_Control2() 已删除（被整页结果表取代） */
 void password_Control();
 void calibration_pass_Control(void);
 void new_return(void);
@@ -239,6 +252,7 @@ void addr_Control1(void);
 void TFT_IO_init(void);
 void u8g2Init1(u8g2_t *u8g2);
 void u8g2Init(u8g2_t *u8g2);
+void UI_TestArtwork(u8g2_t *u8g2);
 
 
 void spi_write_test(uint16_t data);

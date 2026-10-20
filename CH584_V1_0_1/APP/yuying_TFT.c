@@ -1,5 +1,7 @@
-﻿#include "CONFIG.h"
+#include "CONFIG.h"
 #include "yuying_TFT.h"
+#include "ui_latency_diag.h"
+#include "ui_fast_draw.h"
 //#include "u8g2_fonts.c"
 #include "u8g2.h"
 #include "stdlib.h"
@@ -238,7 +240,7 @@ static uint16_t ui_text_draw(uint16_t x, uint16_t baseline, const char *text, ui
         }
         if (glyph != NULL)
         {
-            u8g2_DrawXBMP(&u8g2, x, (uint16_t)(baseline - size + 1u),
+            ui_fast_DrawXBMP(&u8g2, x, (uint16_t)(baseline - size + 1u),
                           glyph->width, (uint16_t)(size + 2u), glyph->bits);
             x = (uint16_t)(x + glyph->width);
         }
@@ -436,14 +438,30 @@ static void UI_Message_Display(void)
     ui_draw(x, y, line);
 }
 
+#if UI_LATENCY_DIAG
+__HIGH_CODE
+static void ui_send_buffer_profiled(uint32_t render_start)
+{
+    uint32_t transfer_start = TMOS_GetSystemClock();
+    ui_profile_render_ticks = (uint32_t)(transfer_start - render_start);
+    u8g2_SendBuffer(&u8g2);
+    ui_profile_transfer_ticks = (uint32_t)(TMOS_GetSystemClock() - transfer_start);
+}
+#endif
+
 __HIGH_CODE
 void UI_Control(data_LIST *list)
 {
     uint8_t rank2_addr=0,rank3_addr=0;
+#if UI_LATENCY_DIAG
+    uint32_t render_start = TMOS_GetSystemClock();
+#endif
     rank=list->menu_rank;
     rank2_addr=list->rank2_addr;
     rank3_addr=list->rank3_addr;
 
+    /* Control commands/no page must preserve panel RAM, never send blank. */
+    if (g_ui_msg == UI_MSG_NONE && (rank < 1u || rank > 4u)) return;
     u8g2_ClearBuffer(&u8g2);
 
     /* ★★ 保存结果提示页优先：只要 g_ui_msg 非 0，就画提示页**并直接返回**。
@@ -452,7 +470,11 @@ void UI_Control(data_LIST *list)
     if (g_ui_msg != UI_MSG_NONE)
     {
         UI_Message_Display();
+#if UI_LATENCY_DIAG
+        ui_send_buffer_profiled(render_start);
+#else
         u8g2_SendBuffer(&u8g2);
+#endif
         return;
     }
 
@@ -481,7 +503,11 @@ void UI_Control(data_LIST *list)
 
            break;
    }
+#if UI_LATENCY_DIAG
+   ui_send_buffer_profiled(render_start);
+#else
    u8g2_SendBuffer(&u8g2);
+#endif
 }
 /* ==================================================================
  * 主页面（menu_rank == 1）：按单色 384×168 屏幕适配工业仪表版式
@@ -568,7 +594,7 @@ static void ui_main_cut_frame(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
 /* 品牌只包含参考图的标识；数值与状态不进入静态资源。 */
 static void ui_main_draw_brand(void)
 {
-    u8g2_DrawXBMP(&u8g2, 9u, 5u, UI_HOME_BRAND_WIDTH, UI_HOME_BRAND_HEIGHT,
+    ui_fast_DrawXBMP(&u8g2, 9u, 5u, UI_HOME_BRAND_WIDTH, UI_HOME_BRAND_HEIGHT,
                   ui_home_brand);
 }
 
@@ -596,7 +622,7 @@ static void ui_main_draw_title(void)
     }
     u8g2_SetDrawColor(&u8g2, 1);
     u8g2_DrawHLine(&u8g2, 98u, 28u, 188u);
-    u8g2_DrawXBMP(&u8g2, 112u, 6u, UI_HOME_TITLE_WIDTH, UI_HOME_TITLE_HEIGHT,
+    ui_fast_DrawXBMP(&u8g2, 112u, 6u, UI_HOME_TITLE_WIDTH, UI_HOME_TITLE_HEIGHT,
                   ui_home_title);
 }
 
@@ -633,11 +659,11 @@ static void ui_main_draw_wireless(uint8_t signal, uint16_t voltage_x, uint16_t v
      * Unknown codes remain crossed; this is not a link-timeout detector. */
     uint8_t icon = (signal >= 8u && signal <= 11u) ? (uint8_t)(signal - 8u) : 0u;
     if (voltage_width <= HOME_WIRELESS_FULL_MAX_W)
-        u8g2_DrawXBMP(&u8g2, (uint16_t)(voltage_x - UI_WIRELESS_WIDTH - HOME_WIRELESS_GAP),
+        ui_fast_DrawXBMP(&u8g2, (uint16_t)(voltage_x - UI_WIRELESS_WIDTH - HOME_WIRELESS_GAP),
                       HOME_WIRELESS_TOP, UI_WIRELESS_WIDTH, UI_WIRELESS_HEIGHT,
                       ui_wireless_icons[icon]);
     else
-        u8g2_DrawXBMP(&u8g2, (uint16_t)(voltage_x - UI_WIRELESS_COMPACT_WIDTH - HOME_WIRELESS_GAP),
+        ui_fast_DrawXBMP(&u8g2, (uint16_t)(voltage_x - UI_WIRELESS_COMPACT_WIDTH - HOME_WIRELESS_GAP),
                       HOME_WIRELESS_COMPACT_TOP, UI_WIRELESS_COMPACT_WIDTH, UI_WIRELESS_COMPACT_HEIGHT,
                       ui_wireless_compact_icons[icon]);
 }
@@ -810,7 +836,7 @@ static void ui_menu_control(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
     uint16_t tw = ui_menu_text_width(text, 16u);
     uint16_t tx;
     u8g2_SetDrawColor(&u8g2, 0);
-    if (selected) u8g2_DrawBox(&u8g2, x, y, w, h);
+    if (selected) ui_fast_DrawBox(&u8g2, x, y, w, h);
     else u8g2_DrawFrame(&u8g2, x, y, w, h);
     u8g2_SetDrawColor(&u8g2, selected ? 1u : 0u);
     if (tw <= w - 8u)
@@ -838,8 +864,8 @@ static void ui_menu_field(uint16_t y, const char *label, const char *value,
 {
     u8g2_SetDrawColor(&u8g2, 0);
     u8g2_DrawFrame(&u8g2, 117u, y, 207u, 27u);
-    if (label_selected) u8g2_DrawBox(&u8g2, 119u, (uint16_t)(y + 2u), 117u, 23u);
-    if (value_selected) u8g2_DrawBox(&u8g2, 238u, (uint16_t)(y + 2u), 84u, 23u);
+    if (label_selected) ui_fast_DrawBox(&u8g2, 119u, (uint16_t)(y + 2u), 117u, 23u);
+    if (value_selected) ui_fast_DrawBox(&u8g2, 238u, (uint16_t)(y + 2u), 84u, 23u);
     u8g2_SetDrawColor(&u8g2, label_selected ? 1u : 0u);
     ui_menu_text(122u, (uint16_t)(y + 20u), label, 16u);
     u8g2_SetDrawColor(&u8g2, value_selected ? 1u : 0u);
@@ -851,11 +877,11 @@ static void ui_menu_header(uint8_t menu)
 {
     if (menu >= MAIN_LEN) menu = 0u;
     u8g2_SetDrawColor(&u8g2, 1);
-    u8g2_DrawBox(&u8g2, 113u, 1u, 266u, 166u);
+    ui_fast_DrawBox(&u8g2, 113u, 1u, 266u, 166u);
     u8g2_SetDrawColor(&u8g2, 0);
     u8g2_DrawRFrame(&u8g2, 114u, 5u, 264u, 159u, 4u);
     /* Keep the same icon, title baseline and divider at menu ranks 2 and 3. */
-    u8g2_DrawXBMP(&u8g2, 118u, 10u, 29u, 27u, ui_menu_title_icons[menu]);
+    ui_fast_DrawXBMP(&u8g2, 118u, 10u, 29u, 27u, ui_menu_title_icons[menu]);
     ui_menu_text(156u, 31u, Menu_List[menu].name, 18u);
     u8g2_DrawHLine(&u8g2, 119u, 42u, 254u);
 }
@@ -900,10 +926,10 @@ void UI_Menu_Display(void)
         uint16_t top = (uint16_t)(9u + 19u * i);
         uint8_t selected = (uint8_t)(Data_list1.menu_rank == 2u && UI_Select == i);
         u8g2_SetDrawColor(&u8g2, 1);
-        if (selected) u8g2_DrawBox(&u8g2, 10u, top, 95u, 19u);
+        if (selected) ui_fast_DrawBox(&u8g2, 10u, top, 95u, 19u);
         else if (UI_Select == i) u8g2_DrawVLine(&u8g2, 10u, top, 19u);
         u8g2_SetDrawColor(&u8g2, selected ? 0u : 1u);
-        u8g2_DrawXBMP(&u8g2, 14u, (uint16_t)(top + 3u), 13u, 13u, ui_menu_nav_icons[i]);
+        ui_fast_DrawXBMP(&u8g2, 14u, (uint16_t)(top + 3u), 13u, 13u, ui_menu_nav_icons[i]);
         ui_menu_text(32u, (uint16_t)(top + 15u), Main_List[i].name, 16u);
     }
     ui_menu_header(UI_Select);
@@ -916,13 +942,20 @@ restore_style:
     if (Data_list1.menu_rank == 2u || Data_list1.menu_rank == 3u)
     {
         uint8_t re = Data_list1.UI_main.re_flag;
-        uint8_t full_screen = (uint8_t)(Data_list1.menu_rank == 3u &&
+        /* ★ V1_0_10：组网测试页（UI_Select==1）真正进入子页后也整页自绘
+           （会盖住左侧菜单列表），所以必须按**整屏**反白，
+           否则左半边不会被反白、会残留菜单列表的痕迹。
+           注意只在 menu_rank==3（已进入子页）时才算整屏 ——
+           rank==2 时这里画的是"菜单列表预览"，仍只占右窗格。 */
+        uint8_t full_screen = (uint8_t)((UI_Select == 1u && Data_list1.menu_rank == 3u &&
+                                         Data_list1.Menu_rank2.net_flag != NET_FLAG_IDLE) ||
+            (Data_list1.menu_rank == 3u &&
             ((UI_Select == 2u && (re == 1u || re == 2u)) ||
              (UI_Select == 3u && (re == 3u || re == 4u)) ||
-             (UI_Select == 6u && re == 5u)));
+             (UI_Select == 6u && re == 5u))));
         u8g2_SetDrawColor(&u8g2, 2u);
-        if (full_screen) u8g2_DrawBox(&u8g2, 1u, 1u, 382u, 166u);
-        else u8g2_DrawBox(&u8g2, 113u, 1u, 266u, 166u);
+        if (full_screen) ui_fast_DrawBox(&u8g2, 1u, 1u, 382u, 166u);
+        else ui_fast_DrawBox(&u8g2, 113u, 1u, 266u, 166u);
     }
     u8g2_SetBitmapMode(&u8g2, bitmap_mode);
     u8g2_SetFontMode(&u8g2, font_mode);
@@ -948,10 +981,10 @@ static void binding_device_list_page(uint8_t rank3)
     char line[48];
     uint8_t i, n, rows_per_column;
     u8g2_SetDrawColor(&u8g2, 1u);
-    u8g2_DrawBox(&u8g2, 1u, 1u, 382u, 166u);
+    ui_fast_DrawBox(&u8g2, 1u, 1u, 382u, 166u);
     u8g2_SetDrawColor(&u8g2, 0u);
     u8g2_DrawRFrame(&u8g2, 2u, 1u, 380u, 166u, 4u);
-    u8g2_DrawXBMP(&u8g2, 10u, 6u, 13u, 13u, ui_menu_nav_icons[2]);
+    ui_fast_DrawXBMP(&u8g2, 10u, 6u, 13u, 13u, ui_menu_nav_icons[2]);
     ui_menu_text(29u, 20u, "设备绑定", 18u);
     sprintf(line, "总设备数:%d台", g_binding_count);
     ui_text_draw(108u, 20u, line, 18u);
@@ -980,10 +1013,10 @@ static void binding_scan_page(uint8_t rank3)
     uint16_t column_step, name_width, row_step;
     char number[32];
     u8g2_SetDrawColor(&u8g2, 1u);
-    u8g2_DrawBox(&u8g2, 1u, 1u, 382u, 166u);
+    ui_fast_DrawBox(&u8g2, 1u, 1u, 382u, 166u);
     u8g2_SetDrawColor(&u8g2, 0u);
     u8g2_DrawRFrame(&u8g2, 2u, 1u, 380u, 166u, 4u);
-    u8g2_DrawXBMP(&u8g2, 10u, 6u, 13u, 13u, ui_menu_nav_icons[2]);
+    ui_fast_DrawXBMP(&u8g2, 10u, 6u, 13u, 13u, ui_menu_nav_icons[2]);
     ui_menu_text(29u, 20u, "设备绑定", 18u);
     n = g_binding_count;
     if (n > MAX_BINDING_NUM) n = MAX_BINDING_NUM;
@@ -1073,13 +1106,13 @@ static void ui_param_frame(void)
 {
     uint8_t i;
     u8g2_SetDrawColor(&u8g2, 1u);
-    u8g2_DrawBox(&u8g2, 1u, 1u, 382u, 166u);
+    ui_fast_DrawBox(&u8g2, 1u, 1u, 382u, 166u);
     u8g2_SetDrawColor(&u8g2, 0u);
     u8g2_DrawRFrame(&u8g2, 2u, 1u, 380u, 166u, 4u);
-    u8g2_DrawXBMP(&u8g2, 10u, 6u, 13u, 13u, ui_menu_nav_icons[UI_Select]);
+    ui_fast_DrawXBMP(&u8g2, 10u, 6u, 13u, 13u, ui_menu_nav_icons[UI_Select]);
     ui_menu_text(29u, 20u, Menu_List[UI_Select].name, 18u);
     /* Compact header: preserve the original upper-right return position. */
-    u8g2_DrawBox(&u8g2, 298u, 3u, 75u, 18u);
+    ui_fast_DrawBox(&u8g2, 298u, 3u, 75u, 18u);
     u8g2_SetDrawColor(&u8g2, 1u);
     ui_menu_text((uint16_t)(298u + (75u - ui_menu_text_width("返回", 14u)) / 2u),
                   16u, "返回", 14u);
@@ -1159,7 +1192,7 @@ void addr_Control(void)
     ui_menu_field(62u, "分站号:", value, ui_menu_selected(0u), ui_menu_selected(1u));
     sprintf(value, "%d", Data_list1.Menu_rank1.set_host_num);
     ui_menu_field(99u, "本机地址:", value, ui_menu_selected(2u), ui_menu_selected(3u));
-    u8g2_DrawXBMP(&u8g2, 325u, 73u, 47u, 52u, ui_menu_detail_address);
+    ui_fast_DrawXBMP(&u8g2, 325u, 73u, 47u, 52u, ui_menu_detail_address);
     ui_menu_button(0u, "保存并返回", ui_menu_selected(4u));
     ui_menu_button(1u, "不保存返回", ui_menu_selected(5u));
 }
@@ -1240,50 +1273,146 @@ void networking_Control1(void)
     u8g2_DrawVLine(&u8g2, 142u, 92u, 5u);
     u8g2_DrawHLine(&u8g2, 136u, 97u, 13u);
     u8g2_DrawHLine(&u8g2, 161u, 84u, 63u);
-    u8g2_DrawXBMP(&u8g2, 226u, 71u, 29u, 27u, ui_menu_title_icons[1]);
+    ui_fast_DrawXBMP(&u8g2, 226u, 71u, 29u, 27u, ui_menu_title_icons[1]);
     u8g2_DrawHLine(&u8g2, 258u, 84u, 63u);
     u8g2_DrawFrame(&u8g2, 327u, 73u, 21u, 25u);
     ui_menu_control(117u, 117u, 128u, 25u, "开始组网", ui_menu_selected(0u), 1u);
     ui_menu_control(247u, 117u, 128u, 25u, "返回", ui_menu_selected(1u), 1u);
 }
 
-void networking_Control2(void)
+/* ★ V1_0_10：原来的 networking_Control2()（只显示"当前那一个地址"的五行）
+   已被 networking_Result_Page() 整页表取代，函数删除。
+   它引用的 text_host_addr / text_cnt / bl_numl / xuhao_num 字段也一并去掉。 */
+/* ==================================================================
+ * 「组网测试」结果页（★ V1_0_10 全新排版）
+ * ------------------------------------------------------------------
+ * 需求：一次把**本机地址**和**三个测试地址**的 (地址, 已测次数/10, 成功率)
+ *       全部排在同一屏上，一眼看全，不再一行一行翻。
+ * 状态（由下发的 net_flag 决定，见 yuying_TFT.h 的 NET_FLAG_xxx）：
+ *   0       空闲   —— 底部左键「开始组网」
+ *   1~3     进行中 —— 底部左键「组网进行中」（只作状态标签），正在测的那一行反白
+ *   4       已完成 —— 底部左键「重新组网」，结果留在屏上不自动返回
+ *   两种非进行中状态下，底部右侧都是「返回」，可高亮可选。
+ * ------------------------------------------------------------------
+ * 区域核算（面板 300x400，U8G2_R3 旋转后可用 400x300，子页整屏框 1..167）：
+ *   表头 26..42；三个数据行 44..134（每行 30）；底部按钮 140..162
+ *   => 合计 26..162，正好落在 1..167 内，且比原来"右窗格 258x120"宽出 124px，
+ *      因此 Table 的"地址 / 次数 / 比率"三列可以各自独立对齐、不用挤。
+ * ================================================================== */
+static void networking_Result_Page(void)
 {
-    char value[20];
-    const char *labels[] = {"次数序号:", "本机地址:", "测试地址:", "测试次数:", "成功比率:"};
+    char buf[24];
     uint8_t i;
-    for (i = 0u; i < 5u; i++)
+    uint16_t flag    = Data_list1.Menu_rank2.net_flag;
+    uint8_t  running = (uint8_t)(flag != NET_FLAG_IDLE && flag != NET_FLAG_DONE);
+    uint8_t  done    = (uint8_t)(flag == NET_FLAG_DONE);
+
+    /* ---- 整页底 + 圆角外框（与设备绑定/参数页同一版式） ---- */
+    u8g2_SetDrawColor(&u8g2, 1u);
+    ui_fast_DrawBox(&u8g2, 1u, 1u, 382u, 166u);
+    u8g2_SetDrawColor(&u8g2, 0u);
+    u8g2_DrawRFrame(&u8g2, 2u, 1u, 380u, 166u, 4u);
+    ui_fast_DrawXBMP(&u8g2, 10u, 6u, 13u, 13u, ui_menu_nav_icons[1]);
+    ui_menu_text(29u, 20u, "组网测试", 18u);
+
+    /* ---- 右上角：本机地址 ---- */
+    sprintf(buf, "本机地址:%d", (int)Data_list1.Menu_rank2.now_host_addr);
     {
-        uint16_t y = (uint16_t)(47u + 23u * i);
-        if (i == 0u) sprintf(value, "%d", Data_list1.Menu_rank2.xuhao_num);
-        else if (i == 1u)
+        uint16_t w = ui_menu_text_width(buf, 18u);
+        ui_menu_text((uint16_t)(376u - w), 20u, buf, 18u);
+    }
+
+    /* ---- 表头 ---- */
+    u8g2_DrawHLine(&u8g2, 6u, 26u, 372u);
+    /* ★ V1_0_11：表头字号由 14 提到 18（与本机地址同号），原来太小看不清。 */
+    ui_menu_text( 30u, 40u, "测试地址", 18u);
+    ui_menu_text(178u, 40u, "测试次数", 18u);
+    ui_menu_text(286u, 40u, "成功比率", 18u);
+    u8g2_DrawHLine(&u8g2, 6u, 42u, 372u);
+
+    /* ---- 三个测试地址，各占一行 ---- */
+    for (i = 0u; i < 3u; i++)
+    {
+        uint16_t y    = (uint16_t)(44u + 30u * i);
+        uint16_t cnt  = Data_list1.Menu_rank2.cnt[i];
+        uint16_t succ = Data_list1.Menu_rank2.succ[i];
+        uint16_t pct  = (cnt == 0u) ? 0u
+                       : (uint16_t)(((uint32_t)succ * 100u + (uint32_t)(cnt / 2u)) / cnt);
+        uint8_t  cur  = (uint8_t)(running && Data_list1.Menu_rank2.cur_index == i);
+
+        if (i != 0u) u8g2_DrawHLine(&u8g2, 6u, y, 372u);
+
+        /* ★★★ V1_0_12：正在测的那一行改成与「菜单/其它选项被选中」**完全一样**的画法。
+           ------------------------------------------------------------------
+           为什么颜色号看着是反的：右侧页面在 UI_Menu_Display() 末尾会被
+           **整体反相一次**（SetDrawColor(2) + DrawBox），所以本函数里的颜色号
+           和肉眼看到的正好相反：
+               代码 color 0  ->  屏上"亮/白"
+               代码 color 1  ->  屏上"暗/黑"
+           页底用 color 1（屏上黑）、普通文字用 color 0（屏上白）=> 黑底白字；
+           而标准"选中"效果（ui_menu_control 的 selected、以及左侧菜单列表）
+           是 **先填 color 0（屏上白）、再把文字换成 color 1（屏上黑）**
+           => 白底黑字。这里就照这个来，和别处选中项长得一模一样。 */
+        if (cur)
         {
-            if (Data_list1.Menu_rank2.now_host_addr == 121u) sprintf(value, "中继");
-            else sprintf(value, "%d", Data_list1.Menu_rank2.now_host_addr);
+            u8g2_SetDrawColor(&u8g2, 0u);
+            ui_fast_DrawBox(&u8g2, 7u, (uint16_t)(y + 1u), 370u, 28u);
         }
-        else if (i == 2u)
-        {
-            if (Data_list1.Menu_rank2.text_host_addr == 121u) sprintf(value, "中继");
-            else if (Data_list1.Menu_rank2.text_host_addr == 122u) sprintf(value, "分站");
-            else sprintf(value, "%d", Data_list1.Menu_rank2.text_host_addr);
-        }
-        else if (i == 3u) sprintf(value, "%d", Data_list1.Menu_rank2.text_cnt);
-        else sprintf(value, "%d %%", Data_list1.Menu_rank2.bl_numl);
-        u8g2_SetDrawColor(&u8g2, 0);
-        u8g2_DrawFrame(&u8g2, 117u, y, 258u, 22u);
-        ui_menu_text(122u, (uint16_t)(y + 17u), labels[i], 16u);
-        ui_menu_text(250u, (uint16_t)(y + 17u), value, 16u);
+        u8g2_SetDrawColor(&u8g2, cur ? 1u : 0u);
+
+        if      (Data_list1.Menu_rank2.addr[i] == 0u)   sprintf(buf, "中继");
+        else if (Data_list1.Menu_rank2.addr[i] == 121u) sprintf(buf, "无");
+        else if (Data_list1.Menu_rank2.addr[i] == 122u) sprintf(buf, "分站");
+        else sprintf(buf, "%d 号", (int)Data_list1.Menu_rank2.addr[i]);
+        ui_menu_text(44u, (uint16_t)(y + 21u), buf, 18u);
+
+        sprintf(buf, "%d / 10", (int)cnt);
+        ui_menu_text(178u, (uint16_t)(y + 21u), buf, 18u);
+
+        sprintf(buf, "%d %%", (int)pct);
+        ui_menu_text(286u, (uint16_t)(y + 21u), buf, 18u);
+
+        u8g2_SetDrawColor(&u8g2, 0u);
+    }
+
+    /* ---- 底部：左「开始组网 / 组网进行中 / 重新组网」，右「返回」 ---- */
+    if (running)
+    {
+        /* 组网期间 STM32 忽略全部按键，这里也就不做高亮，只作状态提示。
+           ★ V1_0_11：文案避开了字库里**没有**的字（见下）。
+           原来写的是「组网进行中」与「重新组网」，而 11/14/16/18 四套字模里
+           **"进"、"行"、"新" 三个字都不存在**（每套 237 个字形、139 个汉字），
+           屏上会走到 '?' 兜底 —— 现场看到的就是"进行/新"这几个字不对。
+           现有字形里 正/在/组/网/重/测 都有，因此改为：
+               组网进行中 -> 正在组网
+               重新组网   -> 重测组网
+           要恢复原词，必须先把这三个字的字模补进 ui_menu_assets.h。 */
+        ui_menu_control(  6u, 140u, 183u, 22u, "正在组网", 0u, 1u);
+        ui_menu_control(195u, 140u, 183u, 22u, "返回",     0u, 1u);
+    }
+    else
+    {
+        ui_menu_control(  6u, 140u, 183u, 22u, done ? "重测组网" : "开始组网",
+                        ui_menu_selected(0u), 1u);
+        ui_menu_control(195u, 140u, 183u, 22u, "返回", ui_menu_selected(1u), 1u);
     }
 }
+
 void networking_Control(void)
 {
-   if( Data_list1.Menu_rank2.net_flag==0)
+   /* ★ V1_0_11（现场要求）：从左边菜单进到右边时，**先显示原来的选择页**
+      （「开始组网 / 返回」），不要一进来就摊开结果表；
+      只有按下「开始组网」、真正开测之后（net_flag 1~3 / 4），才切到整页结果表。
+      所以判据是**状态**而不是 menu_rank：
+        net_flag == 0（空闲）或还没进入子页 -> 原来的紧凑选择页
+        其它（进行中 / 已完成）             -> 整页结果表
+   */
+   if (Data_list1.menu_rank != 3u || Data_list1.Menu_rank2.net_flag == NET_FLAG_IDLE)
    {
-       networking_Control1();//组网选择
+       networking_Control1();
+       return;
    }
-   else{
-       networking_Control2();//组网信息显示
-   }
+   networking_Result_Page();
 }
 
 void calibration_pass_Control(void)
@@ -1518,7 +1647,7 @@ void Other_Settings_Control(void)
     ui_menu_field(78u, "亮屏时间:", value, ui_menu_selected(2u), ui_menu_selected(3u));
     ui_menu_field(107u, "通信状态:", Data_list1.Menu_rank6.state == 1 ? "开机" : "不开机",
                   ui_menu_selected(4u), ui_menu_selected(5u));
-    u8g2_DrawXBMP(&u8g2, 326u, 68u, 46u, 58u, ui_menu_detail_other);
+    ui_fast_DrawXBMP(&u8g2, 326u, 68u, 46u, 58u, ui_menu_detail_other);
     ui_menu_button(0u, "保存并返回", ui_menu_selected(6u));
     ui_menu_button(1u, "不保存返回", ui_menu_selected(7u));
 }
@@ -1621,9 +1750,9 @@ void return_main_Control(void)
     uint16_t version_x, slogan_width, slogan_x;
     /* Static reference artwork only; the STM32 still owns the return action. */
     u8g2_SetDrawColor(&u8g2, 1u);
-    u8g2_DrawBox(&u8g2, 113u, 1u, 266u, 166u);
+    ui_fast_DrawBox(&u8g2, 113u, 1u, 266u, 166u);
     u8g2_SetDrawColor(&u8g2, 0u);
-    u8g2_DrawXBMP(&u8g2, 113u, 1u, 266u, 166u, ui_menu_return_page);
+    ui_fast_DrawXBMP(&u8g2, 113u, 1u, 266u, 166u, ui_menu_return_page);
     /* The reference bitmap carries the same full-size title at both levels. */
     /* Keep the V1_ prefix; controller tenths supply the final two segments. */
     sprintf(version, "V1_%u_%u", (unsigned int)(Data_list1.UI_main.version / 10u),
@@ -1632,10 +1761,10 @@ void return_main_Control(void)
     slogan_width = UI_RETURN_SLOGAN_WIDTH;
     slogan_x = (uint16_t)(113u + (266u - slogan_width) / 2u);
     u8g2_SetDrawColor(&u8g2, 1u);
-    u8g2_DrawBox(&u8g2, 119u, 134u, 254u, 26u);
+    ui_fast_DrawBox(&u8g2, 119u, 134u, 254u, 26u);
     u8g2_SetDrawColor(&u8g2, 0u);
     /* Dedicated binary LiSu artwork uses the same ink color as the version. */
-    u8g2_DrawXBMP(&u8g2, slogan_x, 156u - UI_RETURN_SLOGAN_SIZE,
+    ui_fast_DrawXBMP(&u8g2, slogan_x, 156u - UI_RETURN_SLOGAN_SIZE,
                   UI_RETURN_SLOGAN_WIDTH, UI_RETURN_SLOGAN_HEIGHT,
                   ui_menu_return_slogan);
 #ifdef UI_PREVIEW
@@ -1660,10 +1789,17 @@ void u8g2Init(u8g2_t *u8g2)
 
     u8g2_Setup_st7305_yuying_168x384_f(u8g2, U8G2_R3,u8x8_byte_CH584M_spi, u8x8_CH584M_gpio_and_delay);
 
-    u8g2_InitDisplay(u8g2);         //̬
-    u8g2_SetPowerSave(u8g2, 0);    //
+    u8g2_InitDisplay(u8g2);
+    /* Write a complete requested image before any display-on command. */
+    u8g2_SetPowerSave(u8g2, 1u);
     u8g2_ClearBuffer(u8g2);
-    u8g2_SendBuffer(u8g2);
+}
+
+/* Native ST7305 RAM format, not XBMP. Restoring this image needs only a RAM
+ * write. A physical S2 reset still runs normal controller initialization. */
+void UI_TestArtwork(u8g2_t *u8g2)
+{
+    u8x8_st7305_yuying_send_boot(u8g2_GetU8x8(u8g2));
 }
 
 void u8g2Init1(u8g2_t *u8g2)
@@ -1875,9 +2011,9 @@ void TFT_IO_init(void)
 //
 //  //------画装饰小条------//
 ////  u8g2_SetDrawColor(&u8g2,1);
-////  u8g2_DrawBox(&u8g2,120, 0, 6, 2);
-////  u8g2_DrawBox(&u8g2,120, 62, 6, 2);
-////  u8g2_DrawBox(&u8g2,122, 2, 2, 60);
+////  ui_fast_DrawBox(&u8g2,120, 0, 6, 2);
+////  ui_fast_DrawBox(&u8g2,120, 62, 6, 2);
+////  ui_fast_DrawBox(&u8g2,122, 2, 2, 60);
 ////  u8g2_DrawRBox(&u8g2,120, frame_y + 3, 6, 8, 2);
 ////   u8g2_SetDrawColor(&u8g2,2);                                                                      //选择反色
 ////    frame_lenth_trg = u8g2_GetUTF8Width(&u8g2,Main_List[UI_Select].name) + 2;                        //菜单每个条目的长度

@@ -1055,6 +1055,17 @@ static int add_binding(const uint8_t *mac,
          *   让 add_device() 继续按原绑定填充数据（数据照常接收）。
          * 名字变更的正式上报由 10 分钟巡检任务（name_change_check_round）完成。
          */
+        /* FIX(绑定页名字不更新): 同 MAC 广播名变化时更新显示名 b->name,
+           让绑定页/汇总页显示当前名字; 类型/主机号/通道分配保持不变
+           (避免通道重分配, 数据连续性不受影响)。 */
+        if (tmos_strlen((char*)b->name) != name_len ||
+            !MEM_SAME(b->name, name, name_len))
+        {
+            tmos_memset(b->name, 0, sizeof(b->name));
+            tmos_memcpy(b->name, name, name_len);
+            b->name[name_len] = (char)0;
+        }
+
         BLE_LOG("[WARN] MAC bound with different name, keep old binding: "
               "MAC %02X:%02X:%02X:%02X:%02X:%02X old=%s(%d,%d,%d) new=%.*s(%d,%d,%d)\r\n",
               mac[0],mac[1],mac[2],mac[3],mac[4],mac[5],
@@ -1350,6 +1361,10 @@ uint8_t observer_cmd03_ready(void)
 
     /* ---- 超时（30 秒）---- */
     if ((uint32_t)(g_rsp_sec - g_rsp_start_sec) >= RESP_TIMEOUT_SEC)
+        return 1;
+
+    /* ---- 早应答窗口: 等不到全部设备就用已有数据应答, 缩短息屏获取时间 ---- */
+    if ((uint32_t)(g_rsp_sec - g_rsp_start_sec) >= RESP_EARLY_SEC)
         return 1;
 
     /* ---- 收齐本轮 ---- */
@@ -1975,7 +1990,15 @@ void observer_ble_stat_tick(void)
  *   · cache 里有名字  -> 名字包能解出来，顺便看是不是 SW_ 格式
  *   · reject 在涨    -> 名字解到了但被拒（格式或通道号越界）
  * ================================================================== */
-#define BLE_DIAG_LOG          1     /* 1 = 打开扫描诊断打印（调试用，可关） */
+/* ★ 本轮改动：默认 **关闭** 扫描诊断打印。
+   为什么：BLE_DIAG_LOG 打开时每 5 秒会阻塞打印约 40ms（见下面的使用点），
+   而蓝牙扫描/绑定、屏幕重绘、串口收发**共用同一个 Main_Circulation() 协程**，
+   没有优先级隔离 —— 这段打印会直接推迟 BLE 协议栈的广播/连接事件，
+   是"开蓝牙时动作变慢"的一个明确来源（详见
+   《串口协议与蓝牙影响分析.md》的 C 节：整屏重绘 8~16ms、Flash 擦 20~70ms、
+   诊断打印 ~40ms/5s，其中只有这一条是**纯调试开销、可以零代价去掉**）。
+   需要现场诊断时把 1 改回来重新编译即可（打印内容与原来完全一致）。 */
+#define BLE_DIAG_LOG          0     /* 0 = 关闭扫描诊断打印；1 = 打开（调试用） */
 #define BLE_DIAG_PERIOD_SEC   5     /* 每隔多少秒打印一行 */
 
 volatile uint32_t g_adv_rx_cnt = 0; /* 收到的广播包总数（纯诊断，不参与逻辑） */

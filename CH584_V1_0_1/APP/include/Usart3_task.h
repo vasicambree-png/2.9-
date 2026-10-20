@@ -10,6 +10,7 @@ uint8_t handle_command(uint8_t command, uint8_t *data, uint16_t data_len) ;
 void Usart3_Init(void);
 void app_uart_process(void);
 void usart_task(void);
+void screen_reset_display_init(uint8_t reset_enabled, uint8_t reset_cause);
 void send_response_frame(uint8_t response_cmd, uint8_t *data, uint16_t data_len );
 /* cmd 0x03 传感器数据读取应答端（契约：协议_0x03_传感器数据读取_规格冻结.md）
  * cmd 0x06「一轮采集完成主动上报」载荷与 0x03 完全同构，故组包函数带命令字参数 */

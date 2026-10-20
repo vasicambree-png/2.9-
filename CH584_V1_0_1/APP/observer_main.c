@@ -64,6 +64,9 @@ void Main_Circulation()
  */
 int main(void)
 {
+    /* Capture before library/flash initialization; these registers are RO. */
+    const uint8_t reset_cause = SYS_GetLastResetSta();
+    const uint8_t reset_enabled = (R8_GLOB_CFG_INFO & RB_CFG_RESET_EN) != 0u;
 #if(defined(DCDC_ENABLE)) && (DCDC_ENABLE == TRUE)
     PWR_DCDCCfg(ENABLE);
 #endif
@@ -89,6 +92,10 @@ int main(void)
 #endif
     DelayMs(50);
     PRINT("%s\n", VER_LIB);
+    PRINT("[RESET] enabled=%u cause=0x%02X\r\n",
+          (unsigned int)reset_enabled, (unsigned int)reset_cause);
+    if (!reset_enabled)
+        PRINT("[RESET] S2 test unavailable: enable RST input in ISP settings\r\n");
 
     PRINT("[BOOT] 1  CH58x_BLEInit\r\n");
     CH58x_BLEInit();
@@ -99,6 +106,7 @@ int main(void)
 
     PRINT("[BOOT] 3  u8g2Init\r\n");
     u8g2Init(&u8g2);
+    screen_reset_display_init(reset_enabled, reset_cause);
 
     PRINT("[BOOT] 4  fifo_init\r\n");
     app_drv_fifo_init(&app_uart_rx_fifo, app_uart_rx_buffer, 512);

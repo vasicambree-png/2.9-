@@ -43,6 +43,7 @@ static inline void screen_power_note_page(screen_power_t *s, uint32_t now,
 
 static inline uint8_t screen_power_is_off(screen_power_t *s, uint32_t now)
 {
+    /* Background power/read cycles must not turn the display on. */
     if (!s->seen) return 1u;
     /* Keep third-level selection visible until a normal page exits rank 3.
      * note_page() restarts the configured timeout on that rank change. */
@@ -55,7 +56,7 @@ static inline uint8_t screen_power_is_off(screen_power_t *s, uint32_t now)
     return s->expired;
 }
 
-/* Explicit display reinitialization is a user action, even on the same page. */
+/* Visible messages or an explicit page takeover can refresh activity. */
 static inline void screen_power_wake(screen_power_t *s, uint32_t now)
 {
     s->last_activity = now;

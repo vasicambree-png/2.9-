@@ -7,6 +7,9 @@
 #include "u8g2.h"
 #include "yuying_TFT.h"
 #include "screen_power.h"
+#include "screen_startup.h"
+#include "ui_redraw_policy.h"
+#include "ui_latency_diag.h"
 
 
 #define START_IO_EVT                  0x0001 //
@@ -17,31 +20,24 @@
 #define START_TIMER_EVT               0x0008 //1秒事件
 
 /* ==================================================================
- * UI 刷新门控：最近收到有效页面帧，而且显示器未超时关屏，才允许绘图。
- *
- *   g_frame_last_sec = 距最近一次收到 0x01 帧的秒数（下称"帧龄"）：
- *       · 1 秒事件（START_TIMER_EVT）里 +1（饱和，不回绕）；
- *       · parse_received_frame() 的 case 0x01 完整解析成功后清 0；
- *       · 初值取"从未收到"哨兵（FRAME_AGE_NEVER >= UI_HOLD_SEC ⇒
- *         开机时门控天然是关的）。
- *   判据（两处都必须满足 g_frame_last_sec <= UI_HOLD_SEC）：
- *       · START_IO_EVT 的 200ms 刷新点：满足才置 dis_flag_cnt = 1；
- *       · START_DATA_EVT 的消费点：满足才真正调 UI_Control()。
- *   独立的 screen_power 策略使用“其他设置”的 time_light（0 = 常亮）。
- *   页面/焦点/分页/子页或亮屏时间变化重置计时；普通数据刷新不续亮。
- *   START_DATA_EVT 仅在显示状态变化时调用 SetPowerSave(1/0)。
- *   ⇒ 熄屏期间不绘图，
- *     而 BLE 扫描/解析/绑定、0x03 收齐判定、0x06 上报、Flash 落盘
- *     **完全不受影响**（它们都不看这个门）。
- *
- *   ⚠️ dis_flag_cnt 初值由 2 改为 0：原来那两次"开机强制重画"也要受同一
- *      门控约束，否则上电瞬间（STM32 还没发 0x01）就会白刷一屏。
+ * 显示目标与传感器采集分离：
+ *   · 普通上电无显示目标，保持关屏；0x03 读数、0x06 上报、BLE 数据不唤醒。
+ *   · 底板 rank5 启动命令、或启用 RST 后的 S2 外部复位请求初始化图。
+ *   · rank5 请求初始化图；普通页面缓存后在首图发送完毕再接管。
+ *   · 提示优先，结束后恢复最新目标；无目标则关屏。
+ *   · 先写完整目标画面再开屏，避免显示未初始化/空白显存。
+ * 正常页面的周期刷新要求帧龄 <= UI_HOLD_SEC；帧龄只由有效普通页面
+ * 清零，1 秒事件饱和累加。测试图、提示与目标恢复不受此帧龄限制。
+ * screen_power 沿用 time_light（0=常亮）；数据刷新不续亮。
+ * 绘图门控不阻止 BLE 扫描、读数受理/应答或 Flash 绑定保存。
  * ================================================================== */
 #define UI_HOLD_SEC        5                /* 帧龄 <= 5 秒才允许重画（仅此一处可调） */
 #define FRAME_AGE_NEVER    0xFFFFFFFFu      /* "从未收到 0x01 帧"哨兵 */
 uint32_t dis_flag_cnt = 0;
 uint32_t g_frame_last_sec = FRAME_AGE_NEVER;    /* 帧龄（秒），门控用，见上 */
 static screen_power_t screen_power;
+static screen_startup_t screen_startup;
+static uint8_t displayed_target, test_dirty, restore_pending;
 /* After local binding save, wait for a controller page transition before
  * accepting the same detail page again. A refresh is not a new entry. */
 static uint8_t s_binding_save_return_pending = 0u;
@@ -54,28 +50,20 @@ static uint8_t s_binding_save_return_pending = 0u;
 #define UI_REFRESH_TICKS   20    /* 20 × 10ms = 200ms → 请求一次重画 */
 static uint8_t ui_refresh_tick = 0;
 
-/* ======================================================================
- * ★★ V1_0_2 第二轮修正：整屏重绘的**最小间隔**（把重绘速率和 STM32 发帧速率解耦）
- * ----------------------------------------------------------------------
- * 事实：`UI_Control()` 会走 u8g2_SendBuffer() -> u8x8_byte_CH584M_spi()
- *   -> SPI0_MasterDMATrans()，**阻塞式**把整屏（168x384 单色 ≈ 8064 字节）
- *   推给 ST7305；按 SPI 时钟 8~16MHz 估算一次约 8~16ms。
- * 而 START_DATA_EVT 的周期是 32 × 0.625ms = **20ms**，
- * 且 `app_uart_process()` 每成功解析一条 0x01 帧就把 dis_flag_cnt 置 1。
- * ⇒ 只要 STM32 把 0x01 帧发得够密（它自己的主循环刷新、按键连按、
- *    或任何"变化即发"的逻辑都可能做到），dis_flag_cnt 就被**续满**，
- *    变成"每 20ms 画一整屏"：SPI 占空比冲到 40~80%，留给
- *    TMOS_SystemProcess() 的时间只剩几毫秒 ⇒ BLE 扫描/连接/1 秒事件
- *    全部被推迟（表现就是"STM32 一发帧 CH584 就发卡"）。
- * 修法：给重绘加一个**下限间隔**。无论 dis_flag_cnt 被置 1 多频繁，
- *   两次整屏重绘之间至少间隔 UI_MIN_REDRAW_10MS 个 10ms tick。
- *   - 请求**不会丢**：没到间隔就保留 dis_flag_cnt，等下一个事件再画；
- *   - 正常情况（本地刷新 5Hz + 少量 0x01 帧）完全不受影响；
- *   - 帧风暴时把重绘钉死在 20 次/秒，SPI 占空比 ≤ 32%，TMOS 仍有 13ms/20ms。
- * ====================================================================== */
-#define UI_MIN_REDRAW_10MS  5U   /* 5 × 10ms = 50ms ⇒ 整屏重绘最多 20 次/秒 */
-static uint8_t ui_tick_10ms        = 0;   /* 由 START_IO_EVT 每 10ms 累加 */
-static uint8_t ui_last_redraw_10ms = 0;   /* 上一次真正重绘时的 tick */
+/* Background redraws retain their 50 ms limit. Accepted navigation changes
+ * request START_DATA_EVT immediately and use a 20 ms minimum idle interval.
+ * Use the real TMOS clock, not the number of 10 ms task executions. */
+static ui_redraw_policy_t ui_redraw;
+
+/* Diagnostic builds only: -DUI_LATENCY_DIAG=1. No per-frame or ISR printing.
+ * Statistics start at a complete frame reaching the parser, not a key edge. */
+#if UI_LATENCY_DIAG
+static uint32_t ui_diag_rx, ui_diag_nav, ui_diag_merge, ui_diag_bad;
+static uint32_t ui_diag_wait_max, ui_diag_draw_max, ui_diag_last_report;
+static uint32_t ui_diag_last_tick;
+static uint32_t ui_diag_render_max, ui_diag_transfer_max;
+uint32_t ui_profile_render_ticks, ui_profile_transfer_ticks;
+#endif
 
 /* ======================================================================
  * ★★ V1_0_2 第二轮修正：屏幕"重新初始化"请求（menu_rank == 5）
@@ -83,10 +71,11 @@ static uint8_t ui_last_redraw_10ms = 0;   /* 上一次真正重绘时的 tick */
  * u8g2Init() 对 ST7305（yuying 168x384）就是 **200~270ms 的阻塞**
  * （初始化序列里有 U8X8_DLY(255)，见 parse_received_frame() 的 case 5 注释）。
  * 它绝不能出现在收帧路径上，否则 STM32 连发几帧就能把 TMOS/BLE 饿死。
- * 这里只置一个请求位，由 START_TIMER_EVT（1 秒事件，主循环/TMOS 上下文）
- * 消费一次 —— 同一秒内多次请求只初始化一次。
+ * 收帧只置请求位，由 START_DATA_EVT 在绘制启动图前消费；
+ * 同批请求合并，不再等主页已显示后才做延后的初始化。
  * ====================================================================== */
 volatile uint8_t g_ui_reinit_req = 0;
+static uint32_t ui_reinit_since;
 
 /* ======================================================================
  * ★★ V1_0_2 第二轮修正：0x04 / 0x07 的"清 Flash"改到 1 秒事件里做
@@ -115,7 +104,7 @@ extern data_LIST Data_list1;
  *   device_t / MAX_CH_NUM 来自 observer.h（本文件第 6 行已 include）。 */
 extern device_t CH_com_buf[MAX_CH_NUM];
 extern uint8_t UI_Select ;
-uint8_t Rx_sleep_flag=1;  /* 1 = display off; only main-loop/TMOS code accesses it. */
+uint8_t Rx_sleep_flag=1;  /* Synced at task startup; only main-loop/TMOS code accesses it. */
  uint8_t app_uart_rx_buffer[512] = {0};
 
 // app_drv_fifo_t app_uart_tx_fifo;
@@ -231,18 +220,96 @@ uint16_t cmd05_drop_cnt = 0;   /* 被丢弃的 0x05 请求帧数 */
 
 extern u8g2_t u8g2;
 extern device_info_t device_list[MAX_DEVICES];
+/* ★ V1_0_9：提示页消息码（yuying_TFT.c 里定义）。用来判断"当前是否正在显示
+   常驻提示"（软关机 / 正在关机中），从而在提示期间持续续期屏幕点亮。 */
+extern volatile uint8_t g_ui_msg;
 
 /* Display power is independent of UART/BLE processing. Parser only updates
  * policy; SPI commands and redraw requests are consumed in the 20 ms event. */
-static void screen_power_process(void)
+typedef struct
 {
-    uint8_t off = screen_power_is_off(&screen_power, TMOS_GetSystemClock());
-    if (off != Rx_sleep_flag)
+    Sensor_Tpye type;
+    uint16_t page;
+    uint8_t rank, menu, focus, subpage, message;
+} ui_page_key_t;
+
+static ui_page_key_t ui_current_page_key(void)
+{
+    ui_page_key_t key;
+    key.type = Data_list1.Type;
+    key.rank = Data_list1.menu_rank;
+    key.menu = Data_list1.rank2_addr;
+    key.focus = Data_list1.rank3_addr;
+    key.page = key.rank == 1u ? Data_list1.UI_main.chu_num1 :
+               ((key.rank == 2u || key.rank == 3u) ? Data_list1.UI_main.chu_num2 : 0u);
+    key.subpage = (key.rank == 2u || key.rank == 3u) ? Data_list1.UI_main.re_flag : 0u;
+    key.message = g_ui_msg;
+    return key;
+}
+
+static uint8_t ui_page_changed(const ui_page_key_t *a, const ui_page_key_t *b)
+{
+    return a->type != b->type || a->rank != b->rank || a->menu != b->menu ||
+           a->focus != b->focus || a->page != b->page || a->subpage != b->subpage ||
+           a->message != b->message;
+}
+
+extern volatile uint16_t uart3_line_err_cnt;
+
+static void ui_latency_report(void)
+{
+#if UI_LATENCY_DIAG
+    uint32_t now = TMOS_GetSystemClock();
+    if ((ui_diag_nav != ui_diag_last_report && !ui_redraw.navigation_pending) ||
+        (uint32_t)(now - ui_diag_last_tick) >= MS1_TO_SYSTEM_TIME(5000))
     {
-        u8g2_SetPowerSave(&u8g2, off);
-        Rx_sleep_flag = off;
-        dis_flag_cnt = off ? 0u : 1u;
+        ui_diag_last_tick = now;
+        ui_diag_last_report = ui_diag_nav;
+        PRINT("[UI] rx=%lu nav=%lu merge=%lu bad=%lu wait_max=%lu draw_max=%lu render_max=%lu transfer_max=%lu uarterr=%u pending=%u rank=%u off=%u sysclk=%lu spi_div=%u unit=625us\r\n",
+              (unsigned long)ui_diag_rx, (unsigned long)ui_diag_nav,
+              (unsigned long)ui_diag_merge, (unsigned long)ui_diag_bad,
+              (unsigned long)ui_diag_wait_max, (unsigned long)ui_diag_draw_max,
+              (unsigned long)ui_diag_render_max, (unsigned long)ui_diag_transfer_max,
+              (unsigned int)uart3_line_err_cnt,
+              (unsigned int)ui_redraw.navigation_pending,
+              (unsigned int)Data_list1.menu_rank, (unsigned int)Rx_sleep_flag,
+              (unsigned long)GetSysClock(), (unsigned int)R8_SPI0_CLOCK_DIV);
     }
+#endif
+}
+
+void screen_reset_display_init(uint8_t reset_enabled, uint8_t reset_cause)
+{
+    /* S2 is hardware RST. Do not repurpose or poll PB23 as a GPIO key. */
+    screen_startup_init(&screen_startup, reset_enabled, reset_cause == RST_FLAG_MR);
+    test_dirty = screen_startup.test;
+    if (test_dirty) dis_flag_cnt = 1u;
+}
+
+static uint8_t screen_display_is_off(void)
+{
+    uint8_t target = screen_startup_target(&screen_startup, g_ui_msg);
+    if (target == SCREEN_TARGET_NONE) return 1u;
+    if (target == SCREEN_TARGET_TEST || target == SCREEN_TARGET_MSG) return 0u;
+    return screen_power_is_off(&screen_power, TMOS_GetSystemClock());
+}
+
+static uint8_t screen_power_process(void)
+{
+    uint8_t off = screen_display_is_off();
+    if (off)
+    {
+        if (!Rx_sleep_flag) u8g2_SetPowerSave(&u8g2, 1u);
+        Rx_sleep_flag = 1u;
+    }
+    else if (Rx_sleep_flag || displayed_target !=
+             screen_startup_target(&screen_startup, g_ui_msg))
+    {
+        /* Do not expose stale/blank RAM: display-on follows complete redraw. */
+        dis_flag_cnt = 1u;
+        restore_pending = 1u;
+    }
+    return off;
 }
 
 /* ★★ 线路状态错误计数（只计数，绝不打印 —— ISR 里不能做阻塞式 PRINT） */
@@ -400,9 +467,33 @@ void app_uart_process(void)
            这里再挡一次，防止 packet[] 的尺寸将来被改小 */
         if(pack_len<APP_UART_PACK_MAX)
         {
-            parse_received_frame(packet,pack_len,&Data_list1);
+            ui_page_key_t before = ui_current_page_key();
+            uint32_t received_at = TMOS_GetSystemClock();
+            uint8_t result = parse_received_frame(packet,pack_len,&Data_list1);
+            if (result == 0u)
+            {
+                /* Sensor reads are a data transaction only. In particular,
+                 * do not enqueue a display redraw or navigation on CMD03. */
+                if (packet[4] == 0x03u) continue;
+                ui_page_key_t after = ui_current_page_key();
+#if UI_LATENCY_DIAG
+                if (packet[4] == 0x01u) ui_diag_rx++;
+#endif
+                dis_flag_cnt = 1u; /* Coalesce background requests. */
+                if (ui_page_changed(&before, &after))
+                {
+#if UI_LATENCY_DIAG
+                    ui_diag_nav++;
+                    if (ui_redraw.navigation_pending) ui_diag_merge++;
+#endif
+                    ui_redraw_navigation(&ui_redraw, received_at);
+                    tmos_set_event(usartTaskId, START_DATA_EVT);
+                }
+            }
+#if UI_LATENCY_DIAG
+            else ui_diag_bad++;
+#endif
         }
-        dis_flag_cnt = 1;               /* ★ 合并重画请求：置位即可，绝不排队 */
     }
 }
 
@@ -460,9 +551,6 @@ uint16_t usart_ProcessEvent(uint8_t task_id, uint16_t events)
         *   ⚠️ 与下面的 200ms 重画计数在同一个 10ms 事件内；**不新增更高频事件**。 */
        observer_adv_drain(16);
 
-       /* ★ 10ms 心跳：重绘的最小间隔就是用它当时间基准（见上面的 UI_MIN_REDRAW_10MS） */
-       ui_tick_10ms++;
-
        /* ★ 契约 §2.7：CH584M 本地内容（通道值/RSSI/电压/绑定数/告警数）也要实时刷新。
         *   改前只有收到 0x01 帧（app_uart_process 里 dis_flag_cnt++）才重画，
         *   因此本地采集到的内容最多 1 秒一次、且依赖 STM32 是否发帧。
@@ -490,24 +578,76 @@ uint16_t usart_ProcessEvent(uint8_t task_id, uint16_t events)
    }
    if(events & START_DATA_EVT) //数据事件
    {
-     screen_power_process();
-     /* Consume redraws only while on with recent page data. A navigation
-        change wakes once and requests a redraw of the latest cached data. */
-     if (g_frame_last_sec > UI_HOLD_SEC || Rx_sleep_flag)
+     uint32_t next_ticks = MS1_TO_SYSTEM_TIME(20);
+        if (g_ui_reinit_req)
+        {
+            g_ui_reinit_req = 0;
+            /* Age the request itself, not the last unrelated UART frame.
+             * Restore the latest target and power, even if pages arrived
+             * since rank 5; the command is never stored as a page. */
+            if ((uint32_t)(TMOS_GetSystemClock() - ui_reinit_since) <=
+                    UI_HOLD_SEC * SCREEN_TICKS_PER_SEC && !screen_display_is_off())
+            {
+                u8g2Init(&u8g2);
+                Rx_sleep_flag = 1u;
+                restore_pending = 1u;
+                dis_flag_cnt = 1;        /* 当前显示事件随后补画启动图 */
+            }
+        }
+
+     uint8_t off = screen_power_process();
+     uint8_t target = screen_startup_target(&screen_startup, g_ui_msg);
+     /* Page telemetry retains its freshness gate. S2 artwork, messages and
+        restoration do not depend on receiving a baseboard page first. */
+     if (off || (target == SCREEN_TARGET_PAGE && !restore_pending &&
+                 g_frame_last_sec > UI_HOLD_SEC) ||
+         (target == SCREEN_TARGET_TEST && !test_dirty && !restore_pending))
      {
         dis_flag_cnt = 0;              /* 门控关：清掉挂起请求（息屏期绝不落笔） */
+        ui_redraw_cancel(&ui_redraw);
      }
      else if(dis_flag_cnt)
      {
-        /* ★ 最小间隔：没到就把请求留着，下一个事件再画（不丢请求、不排队）。 */
-        if ((uint8_t)(ui_tick_10ms - ui_last_redraw_10ms) >= UI_MIN_REDRAW_10MS)
+        uint32_t now = TMOS_GetSystemClock();
+        uint32_t wait = ui_redraw_wait(&ui_redraw, now);
+        if (wait == 0u)
         {
-           ui_last_redraw_10ms = ui_tick_10ms;
-           UI_Control(&Data_list1);
-           dis_flag_cnt--;
+#if UI_LATENCY_DIAG
+           uint32_t start = now;
+           if (ui_redraw.navigation_pending)
+           {
+               uint32_t waited = (uint32_t)(start - ui_redraw.navigation_since);
+               if (waited > ui_diag_wait_max) ui_diag_wait_max = waited;
+           }
+#endif
+           if (target == SCREEN_TARGET_TEST)
+           {
+               UI_TestArtwork(&u8g2);
+               screen_startup_artwork_sent(&screen_startup);
+           }
+           else UI_Control(&Data_list1);
+           if (Rx_sleep_flag) u8g2_SetPowerSave(&u8g2, 0u);
+           Rx_sleep_flag = 0u;
+           displayed_target = target;
+           test_dirty = restore_pending = 0u;
+           now = TMOS_GetSystemClock();
+#if UI_LATENCY_DIAG
+           if ((uint32_t)(now - start) > ui_diag_draw_max)
+               ui_diag_draw_max = (uint32_t)(now - start);
+           if (ui_profile_render_ticks > ui_diag_render_max)
+               ui_diag_render_max = ui_profile_render_ticks;
+           if (ui_profile_transfer_ticks > ui_diag_transfer_max)
+               ui_diag_transfer_max = ui_profile_transfer_ticks;
+#endif
+           ui_redraw_complete(&ui_redraw, now);
+           dis_flag_cnt = 0u;
+        }
+        else if (ui_redraw.navigation_pending && wait < next_ticks)
+        {
+           next_ticks = wait; /* Revisit at the navigation deadline. */
         }
      }
-     tmos_start_task(usartTaskId, START_DATA_EVT, 32);//20ms（32 × 0.625ms）
+     tmos_start_task(usartTaskId, START_DATA_EVT, next_ticks);
      return (events ^ START_DATA_EVT);
 
    }
@@ -549,31 +689,8 @@ uint16_t usart_ProcessEvent(uint8_t task_id, uint16_t events)
                        Data_list1.UI_main.re_flag == 2)
                       ? SCAN_MODE_BIND : SCAN_MODE_DATA;
 
-        /* ==================================================================
-         * ★★ V1_0_2 第二轮修正：把"每帧都可能触发的大阻塞"集中到这里做
-         * ------------------------------------------------------------------
-         * 这个 1 秒事件是**唯一**适合做阻塞操作的地方（主循环/TMOS 上下文，
-         * 一秒才来一次）。下面两件事原来都发生在收帧路径上，会随 STM32 的
-         * 发帧密度被无限放大，现在统一挪到这里、每个周期最多各做一次：
-         *   1) menu_rank==5 的屏幕重新初始化（u8g2Init 内含 U8X8_DLY(255)，
-         *      200~270ms 阻塞）；
-         *   2) 0x04/0x07 的 Data-Flash 整块擦除（20~35ms，最坏 ~70ms）。
-         * 两件事都不影响协议：前者本来就是"让屏幕重新初始化"的副作用，
-         * 后者对应的应答已经在收帧时按原协议发出去了（status 只看 RAM）。
-         * ================================================================== */
-        if (g_ui_reinit_req)
-        {
-            g_ui_reinit_req = 0;
-            /* Do not let deferred initialization reopen an expired display. */
-            if (g_frame_last_sec <= UI_HOLD_SEC &&
-                !screen_power_is_off(&screen_power, TMOS_GetSystemClock()))
-            {
-                u8g2Init(&u8g2);
-                Rx_sleep_flag = 0u;      /* u8g2Init() enables the display. */
-                dis_flag_cnt = 1;        /* 重新初始化后补画一帧 */
-            }
-        }
-
+        /* Deferred Flash erasure stays in the one-second task. Display
+         * initialization is consumed before artwork in START_DATA_EVT. */
         if (g_store_clear_req)
         {
             g_store_clear_req = 0;
@@ -595,17 +712,27 @@ uint16_t usart_ProcessEvent(uint8_t task_id, uint16_t events)
         /* ★★★ V1_0_2 第六轮新增：保存/清除结果提示页的倒数。
          * 数到 0 就清掉提示并请求一次重画 —— 于是屏幕自动回到最新页面
          * （提示期间收到的普通页面帧已经把字段更新进 Data_list1 了）。 */
+        /* ★ FIX(本轮)：原来这里的 if **少了函数体**，紧接着的那个裸块 { } 变成了
+         *   "每秒无条件重画"：提示倒数到 0 的返回值被忽略，而且屏幕每秒被强制重画一次
+         *   （400x300 全屏，占 CPU/总线，会挤占 BLE 与串口的时间）。
+         *   现在把那个裸块收回成这个 if 的函数体：提示消失时重画一次。 */
         if (ui_msg_tick_sec() != 0U)
-
-        /* ★★★ 第 12 轮修正：绑定/扫描页的名字缓存是**BLE 回调异步**填进来的，
-           而重画只由"收到 0x01 帧"触发（app_uart_process 里置 dis_flag_cnt）。
-           于是刚进绑定页时名字还是空的，必须再按一下键、等 STM32 发来一帧
-           才把名字刷出来 —— 现场表现就是"进绑定页不显示名字，按一下才出"。
-           这里在绑定页期间每 1 秒主动请求一次重画，名字扫到就立刻显示。 */
-        if (g_scan_mode == SCAN_MODE_BIND)
         {
-            dis_flag_cnt = 1;
+            dis_flag_cnt = 1;        /* 提示倒数到 0：请求一次重画，回到最新页面 */
         }
+
+        /* ★★★ V1_0_9：常驻提示（软关机 = "长按K1+K3开机"、正在关机中）显示期间
+           持续续期屏幕点亮。
+           原因：screen_power 策略是按 time_light 秒无"页面变化"就把屏幕熄掉，
+           而常驻提示期间 STM32 根本不会发页面帧 —— 不续期的话提示页会在
+           time_light 到点时被自己的省电策略熄灭，用户刚要长按开机屏幕就黑了。
+           非常驻提示（保存结果等，2 秒）不需要续期，它们本来就会自动消失。 */
+        if (g_ui_msg == UI_MSG_POWER_OFF || g_ui_msg == UI_MSG_SHUTTING_DOWN)
+        {
+            screen_power_wake(&screen_power, TMOS_GetSystemClock());
+        }
+
+        if (g_scan_mode == SCAN_MODE_BIND)
         {
             dis_flag_cnt = 1;
         }
@@ -669,6 +796,7 @@ uint16_t usart_ProcessEvent(uint8_t task_id, uint16_t events)
          *        本来就在跑（正常，会随现场无广播源每 10 秒 +1）/ 其它=异常。 */
         observer_ble_stat_tick();
         observer_ble_diag_tick();   /* ★ 第 9 轮：每 5 秒无条件打印扫描诊断 */
+        ui_latency_report();        /* Diagnostic build only; at most once per second. */
 
     tmos_start_task(usartTaskId, START_TIMER_EVT, 1600);//10ms
     return (events ^ START_TIMER_EVT);
@@ -679,14 +807,15 @@ uint16_t usart_ProcessEvent(uint8_t task_id, uint16_t events)
 __HIGH_CODE
 void usart_task(void)
 {
-    /* InitDisplay ran before task registration. Keep display off until a
-       complete accepted page arrives; receiving data never stops. */
-    u8g2_SetPowerSave(&u8g2, 1u);
+#if UI_LATENCY_DIAG
+    PRINT("[UI-DIAG] UART1 115200 ready; timing v4; fast bitmap/box; render/transfer split; idle report every 5s\r\n");
+#endif
+    /* Initialization left the panel off. The display event renders before on. */
     Rx_sleep_flag = 1u;
 
     usartTaskId = TMOS_ProcessEventRegister(usart_ProcessEvent);
 
-    tmos_start_task(usartTaskId, START_IO_EVT,800);  //立即开始
+    tmos_start_task(usartTaskId, START_IO_EVT, UI_IO_TICK_TICKS);
 
     tmos_set_event(usartTaskId, START_TIMER_EVT);   //立即开始
 
@@ -1000,7 +1129,10 @@ uint8_t parse_received_frame(uint8_t *rx_buffer, uint16_t data_len, data_LIST *p
           else if (menu_rank == 2u || menu_rank == 3u)
           {
               /* Each menu includes its data plus trailing page/re_flag. */
-              static const uint8_t min_params[8] = {4u, 8u, 16u, 23u, 8u, 5u, 10u, 2u};
+              /* ★ V1_0_10：rank2==1（组网测试）的参数个数由 8 提到 14 ——
+      本机地址 / 状态 / 当前序号 / 3×地址 / 3×次数 / 3×成功 + 末尾 2 个（chu_num2, re_flag）。
+      其余各项未变。**与 STM32 V1_0_51 配套，必须同时升级。** */
+          static const uint8_t min_params[8] = {4u, 14u, 16u, 23u, 8u, 5u, 10u, 2u};
               if (rank2 >= sizeof(min_params) || param_cnt < min_params[rank2]) return 5;
           }
           else if (menu_rank == 6u)
@@ -1012,11 +1144,13 @@ uint8_t parse_received_frame(uint8_t *rx_buffer, uint16_t data_len, data_LIST *p
               return 10;
           }
 
-          /* ★★★ V1_0_2 第六轮：menu_rank == 6 是"保存结果提示页"，它**不是页面状态**，
+          /* rank 5 is a control command; rank 6 is a message. Neither may
+             replace the last valid page or create a page out of empty RAM.
+             menu_rank == 6 是"保存结果提示页"，它**不是页面状态**，
              所以绝不能写进 Data_list1 —— 否则提示消失后 UI_Control 会按 rank=6
              落到 default 分支，把屏幕画成一片空白（直到 STM32 再发一帧真实页面）。
              提示页只使用它的参数（msg 码），页面字段保持上一帧的值。 */
-          if (menu_rank != 6u)
+          if (menu_rank >= 1u && menu_rank <= 4u)
           {
               pData->Type = sensor_type;
               pData->menu_rank = menu_rank;
@@ -1079,14 +1213,14 @@ uint8_t parse_received_frame(uint8_t *rx_buffer, uint16_t data_len, data_LIST *p
                           pData->Menu_rank1.set_sub_num  = param_data[1];
                           break;
                       }
-                      case 1: {   // data_addr2
-                          if (param_cnt < 6) return 5;
-                          pData->Menu_rank2.xuhao_num      = param_data[0];
-                          pData->Menu_rank2.now_host_addr  = param_data[1];
-                          pData->Menu_rank2.text_host_addr = param_data[2];
-                          pData->Menu_rank2.text_cnt       = param_data[3];
-                          pData->Menu_rank2.bl_numl        = param_data[4];
-                          pData->Menu_rank2.net_flag       = param_data[5];
+                      case 1: {   // data_addr2（★ V1_0_10 新布局：三个地址一次全给）
+                          if (param_cnt < 12) return 5;
+                          pData->Menu_rank2.now_host_addr = param_data[0];
+                          pData->Menu_rank2.net_flag      = param_data[1];
+                          pData->Menu_rank2.cur_index     = param_data[2];
+                          for (int i = 0; i < 3; i++) pData->Menu_rank2.addr[i] = param_data[3 + i];
+                          for (int i = 0; i < 3; i++) pData->Menu_rank2.cnt[i]  = param_data[6 + i];
+                          for (int i = 0; i < 3; i++) pData->Menu_rank2.succ[i] = param_data[9 + i];
                           break;
                       }
                       case 2: {   // data_addr3
@@ -1168,10 +1302,19 @@ uint8_t parse_received_frame(uint8_t *rx_buffer, uint16_t data_len, data_LIST *p
                    * 整屏重绘的唯一驱动）就被推迟 0.2 秒以上。
                    * STM32 一侧这种帧只有 13 字节（线上 1.13ms），
                    * 一旦被连发就能把 BLE 彻底饿死。
-                   * 现在只**置请求标志**，真正的 u8g2Init() 放到 1 秒事件里做
-                   * （那里本来就是"主循环/TMOS 上下文、允许阻塞操作"的地方），
-                   * 而且同一秒内多次请求只做一次。 */
+                   * 收帧只置请求标志；显示任务在启动图发送前初始化一次，
+                   * 同批请求合并，随后主页接管，不在主页之后重播初始化。 */
+                  /* The baseboard sends rank 5 on normal startup, before
+                   * its home page. It is an explicit visible startup request,
+                   * unlike background CMD03 reads. Keep cached page fields. */
+                  /* Preserve messages as in the Git baseline. Only the
+                   * controller's msg=0 clears a persistent power prompt. */
+                  screen_startup_request_artwork(&screen_startup);
+                  test_dirty = 1u;
+                  ui_redraw_navigation(&ui_redraw, TMOS_GetSystemClock());
+                  tmos_set_event(usartTaskId, START_DATA_EVT);
                   g_ui_reinit_req = 1;
+                  ui_reinit_since = TMOS_GetSystemClock();
 
                   break;
               case 6:
@@ -1191,6 +1334,21 @@ uint8_t parse_received_frame(uint8_t *rx_buffer, uint16_t data_len, data_LIST *p
                       return 11;   /* 提示页必须带 1 个参数 */
                   }
                   ui_show_msg((uint8_t)(param_data[0] & 0xFFU));
+                  if (g_ui_msg == UI_MSG_POWER_OFF || g_ui_msg == UI_MSG_SHUTTING_DOWN)
+                      screen_startup.resume_intro_armed = 1u;
+                  /* ★★★ V1_0_9：提示帧（menu_rank = 6）不参与屏幕点亮策略 ——
+                     screen_power_note_page() 只在 rank 1..4 的页面帧里被调用，
+                     提示帧既不点亮屏幕、也不刷新"最后活动时刻"。
+                     于是"关机后按键唤醒只进提示页"时屏幕一直是黑的：
+                     画面其实已经画进缓冲区，但面板没被点亮，用户什么都看不到
+                     （现场表现："轻触任意键进入开机提示页，屏幕却不显示"），
+                     一直要等 STM32 开机后发来普通页面帧才亮一下 —— 看上去
+                     就是"提示页闪一下就被正常页顶掉"。
+                     用户可见的提示必须点亮屏幕，这里补一次 screen_power_wake()。 */
+                  if ((uint8_t)(param_data[0] & 0xFFU) != UI_MSG_NONE)
+                  {
+                      screen_power_wake(&screen_power, TMOS_GetSystemClock());
+                  }
                   break;
               default:
                   return 10;   // 无效 menu_rank
@@ -1216,21 +1374,47 @@ uint8_t parse_received_frame(uint8_t *rx_buffer, uint16_t data_len, data_LIST *p
           /* Always accept/cache valid data, even with display off. Only
              navigation or timeout changes count as activity; measurements
              (battery, RSSI, sensor values) deliberately do not. */
-          g_frame_last_sec = 0u;
           if (menu_rank >= 1u && menu_rank <= 4u)
           {
+              uint32_t page_now = TMOS_GetSystemClock();
+              uint8_t page_was_off = screen_startup.valid_page &&
+                  !screen_startup.test && !screen_startup.intro_pending &&
+                  !screen_startup.resume_intro_armed && g_ui_msg == UI_MSG_NONE &&
+                  screen_power_is_off(&screen_power, page_now);
+              g_frame_last_sec = 0u;
+              /* K1+K3 software boot sends msg=0 and home, without rank5.
+               * A first real page is visible activity; CMD03/msg0 alone is
+               * not. Also handle resume when debug power kept this MCU alive.
+               * Pages cached during a shutdown prompt do not complete boot. */
+              if ((!screen_startup.resume_intro_armed && !screen_startup.valid_page &&
+                   !screen_startup.test && !screen_startup.intro_pending) ||
+                  (screen_startup.resume_intro_armed &&
+                   g_ui_msg != UI_MSG_POWER_OFF && g_ui_msg != UI_MSG_SHUTTING_DOWN))
+              {
+                  screen_startup_request_artwork(&screen_startup);
+                  test_dirty = 1u;
+              }
+              if (screen_startup.test)
+                  screen_power_wake(&screen_power, TMOS_GetSystemClock());
+              screen_startup.test = 0u;
+              screen_startup.valid_page = 1u;
               uint16_t page = (menu_rank == 1u) ? pData->UI_main.chu_num1 :
                               ((menu_rank == 2u || menu_rank == 3u) ?
                                pData->UI_main.chu_num2 : 0u);
               uint8_t subpage = (menu_rank == 2u || menu_rank == 3u) ?
                                 pData->UI_main.re_flag : 0u;
-              screen_power_note_page(&screen_power, TMOS_GetSystemClock(),
+              screen_power_note_page(&screen_power, page_now,
                                      menu_rank, rank2, rank3, page, subpage,
                                      pData->Menu_rank6.time_light);
-          }
-          else if (menu_rank == 5u)
-          {
-              screen_power_wake(&screen_power, TMOS_GetSystemClock());
+              /* A navigation frame can wake a timed-out display without
+               * restarting this MCU. Send the intro before its cached page.
+               * Identical background page data cannot release the timeout. */
+              if (page_was_off && !screen_power_is_off(&screen_power, page_now))
+              {
+                  screen_startup_request_artwork(&screen_startup);
+                  screen_startup.test = 0u;
+                  test_dirty = 1u;
+              }
           }
         break;
         case 0x02:
