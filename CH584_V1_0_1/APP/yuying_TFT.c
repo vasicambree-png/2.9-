@@ -1787,7 +1787,13 @@ void u8g2Init(u8g2_t *u8g2)
 {
     TFT_IO_init();
 
-    u8g2_Setup_st7305_yuying_168x384_f(u8g2, U8G2_R3,u8x8_byte_CH584M_spi, u8x8_CH584M_gpio_and_delay);
+#if SCREEN_PANEL_ST7306_42
+    u8g2_Setup_st7306_300x400_f(u8g2, U8G2_R3,
+                                 u8x8_byte_CH584M_spi, u8x8_CH584M_gpio_and_delay);
+#else
+    u8g2_Setup_st7305_yuying_168x384_f(u8g2, U8G2_R3,
+                                        u8x8_byte_CH584M_spi, u8x8_CH584M_gpio_and_delay);
+#endif
 
     u8g2_InitDisplay(u8g2);
     /* Write a complete requested image before any display-on command. */
@@ -1799,7 +1805,21 @@ void u8g2Init(u8g2_t *u8g2)
  * write. A physical S2 reset still runs normal controller initialization. */
 void UI_TestArtwork(u8g2_t *u8g2)
 {
+#if SCREEN_PANEL_ST7306_42
+    /* Do NOT transmit the ST7305 native boot bitmap to an ST7306 panel.
+     * This first-power-on geometry test also works without the baseboard. */
+    u8g2_ClearBuffer(u8g2);
+    u8g2_SetDrawColor(u8g2, 1u);
+    u8g2_DrawFrame(u8g2, 0u, 0u, SCREEN_WIDTH, SCREEN_HEIGHT);
+    u8g2_DrawFrame(u8g2, 6u, 6u, SCREEN_WIDTH - 12u, SCREEN_HEIGHT - 12u);
+    u8g2_DrawHLine(u8g2, 0u, SCREEN_HEIGHT / 2u, SCREEN_WIDTH);
+    u8g2_DrawVLine(u8g2, SCREEN_WIDTH / 2u, 0u, SCREEN_HEIGHT);
+    u8g2_DrawBox(u8g2, 24u, 24u, 48u, 48u);
+    u8g2_DrawBox(u8g2, SCREEN_WIDTH - 72u, SCREEN_HEIGHT - 72u, 48u, 48u);
+    u8g2_SendBuffer(u8g2);
+#else
     u8x8_st7305_yuying_send_boot(u8g2_GetU8x8(u8g2));
+#endif
 }
 
 void u8g2Init1(u8g2_t *u8g2)
