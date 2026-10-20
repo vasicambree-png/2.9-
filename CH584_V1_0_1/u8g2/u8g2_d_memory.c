@@ -103,14 +103,16 @@ uint8_t *u8g2_m_21_48_f(uint8_t *page_cnt)
   return buf;
   #endif
 }
-// 1. »º³åÇø·ÖÅäº¯Êı£¨È«ÆÁ»º³å£¬tile ¿í38£¬¸ß50£©
+/* ST7306 4.2-inch full buffer: 600 x 400 virtual mono bits = 30000 bytes.
+ * Physical screen is 300 x 400 with 2 virtual bits per physical pixel.
+ * The legacy helper name (38_50) is preserved for link compatibility. */
 uint8_t *u8g2_m_38_50_f(uint8_t *page_cnt)
 {
 #ifdef U8G2_USE_DYNAMIC_ALLOC
     *page_cnt = 50;
-    return 0;   // ¶¯Ì¬·ÖÅäÓÉµ÷ÓÃÕß´¦Àí
+    return 0;   // åŠ¨æ€åˆ†é…ç”±è°ƒç”¨è€…å¤„ç†
 #else
-    static uint8_t buf[30000];   // 38 * 50 * 8 = 15200 ×Ö½Ú
+    static uint8_t buf[30000];   /* 75 * 50 * 8 bytes */
     *page_cnt = 50;
     return buf;
 #endif
