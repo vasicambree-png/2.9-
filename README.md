@@ -33,4 +33,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 
 ## STM32L0 底板工程（2026-10-22）
 
-新增 [底板 V1_0_64 工程](1_新L0底板_完整工程_V1_0_64/README.md)，包含源码、SDK依赖、CubeMX/Keil工程和本轮重新编译的HEX。版本显示优化已撤回；原有CH584及上位机文件保持不变。底板编译0错误0警告，烧录与实机行为尚未验证。
+新增 [底板 V1_0_64 工程](1_新L0底板_完整工程_V1_0_64/README.md)，包含源码、SDK依赖、CubeMX/Keil工程和本轮重新编译的HEX。版本显示优化已撤回；原有CH584及上位机文件保持不变。底板完整Rebuild为0错误49警告；此前0警告仅为ui.c增量构建结果。烧录与实机行为尚未验证。
