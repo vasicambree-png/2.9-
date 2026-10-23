@@ -317,9 +317,7 @@ static uint8_t  s_req_pending;              /* 1 = 有一条 0x03 请求正在等应答 */
 static volatile uint32_t s_req_pending_tick;         /* 该请求发出时的 Rt_tick          */
 static uint32_t s_req_blocked;              /* 在途期间被跳过的 1 s 触发次数   */
 extern uint8_t sleep_mode;
-extern Flash_Set Setup;
 static uint8_t s_sleep_request_active;
-static uint32_t s_sleep_request_plan_tick;
 static uint32_t s_req_reply_ok;
 static uint32_t s_req_timeout;              /* 由 35 s 兜底释放的在途标志次数  */
 
@@ -598,7 +596,7 @@ static uint8_t sensor_parse_frame(const uint8_t *f, uint16_t total)
             {
                 /* Capture this exact response, not a later 0x06/cache update.
                    The unchanged CH584 protocol can still return timeout cache. */
-                Lora_QueueCollectedReport(&f[5], s_sleep_request_plan_tick);
+                Lora_QueueCollectedReport(&f[5]);
             }
         }
         s_sleep_request_active = 0U;
@@ -1208,9 +1206,6 @@ static uint32_t s_sleep_pwr_cycles;     /* 已执行的"上电->读->断电"轮数         
 static uint32_t s_sleep_read_ok;        /* 收到 0x03 应答、数据已更新的轮数      */
 static uint32_t s_sleep_read_tmo;       /* 应答超时 / 请求没发出去 / 被唤醒打断的轮数 */
 static uint32_t s_sleep_next_read_tick;
-static uint32_t s_sleep_phase_delay_ticks;
-static uint8_t s_sleep_plan_host;
-static uint8_t s_sleep_plan_partition;
 static uint8_t  s_sleep_sched_valid;   /* ★ V1_0_46：读取计划是否已排过（跨"息屏重入"保留） */ /* 记录"下次读取时刻"（Rt_tick，100 ms）*/
 
 /* Advance from the planned deadline, not from slow collection/RF completion.
@@ -1298,21 +1293,6 @@ void lcd_power_off(void)
  *      每 SLP_READ_PERIOD_SEC 秒推进；
  *   3) 清 g_slp_keep_awake（此时还没进读取窗口，允许进 STOP）。
  * ------------------------------------------------------------------------ */
-static void sleep_read_rephase_if_needed(void)
-{
-    uint32_t delay;
-    if ((s_sleep_sched_valid == 0U) ||
-        ((s_sleep_plan_host == Setup.Host_number) &&
-         (s_sleep_plan_partition == Setup.partition))) { return; }
-    delay = Lora_SleepCollectionDelayTicks();
-    /* Shift the existing periodic grid, never restart a 600s countdown.
-       A newly overdue slot is serviced on this pass, not skipped for a period. */
-    s_sleep_next_read_tick += delay - s_sleep_phase_delay_ticks;
-    s_sleep_phase_delay_ticks = delay;
-    s_sleep_plan_host = Setup.Host_number;
-    s_sleep_plan_partition = Setup.partition;
-}
-
 void sleep_read_begin(void)
 {
     s_sleep_request_active = 0U;
@@ -1338,13 +1318,9 @@ void sleep_read_begin(void)
        计划本身在每次读取完成 / 被判定跳过时都会顺延一个周期，因此不会只读一次。 */
     if (s_sleep_sched_valid == 0U)
     {
-        s_sleep_phase_delay_ticks = Lora_SleepCollectionDelayTicks();
-        s_sleep_next_read_tick = Rt_tick + s_sleep_phase_delay_ticks;
-        s_sleep_plan_host = Setup.Host_number;
-        s_sleep_plan_partition = Setup.partition;
+        s_sleep_next_read_tick = Rt_tick + ((uint32_t)SLP_FIRST_READ_DELAY_SEC * 10U);
         s_sleep_sched_valid    = 1U;
     }
-    sleep_read_rephase_if_needed();
 
     /* ★ 打印里带上排程信息，便于核对"重进息屏不会推后计划" */
     printf("sleep read: begin, period=%us first=%us boot_wait=%ums timeout=%ums sched=%u next=%lu\r\n",
@@ -1409,7 +1385,6 @@ void sleep_read_service(void)
     switch (s_sleep_state)
     {
         case SLP_ST_IDLE:
-            sleep_read_rephase_if_needed();
             /* 到点判据用**带符号差**：s_sleep_next_read_tick 是"下次读取的时刻"，
                没到就继续等。用无符号比较会因为"减出来是负数被当成巨大值"
                而把周期算错（第一轮会变成 首延迟 + 一个周期）。
@@ -1430,11 +1405,6 @@ void sleep_read_service(void)
                 return;
             }
 
-            /* Keep the planned anchor on normal/late starts. The STOP-chunk
-               fallback may fire before the primary tick deadline; use now then,
-               never leave a successful collection waiting on a future anchor. */
-            s_sleep_request_plan_tick = ((int32_t)(Rt_tick - s_sleep_next_read_tick) >= 0)
-                                      ? s_sleep_next_read_tick : Rt_tick;
             /* ① CH584M 上电（它的绑定表从自己的 Flash 恢复） */
             s_sleep_pwr_cycles++;
             { extern volatile uint32_t g_cad_cnt, g_rx_hit_cnt, g_light_chk_cnt;
