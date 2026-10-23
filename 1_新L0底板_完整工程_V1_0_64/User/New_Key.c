@@ -746,6 +746,11 @@ void Key_task(void)
 											break;
 										default:
 											DisOpt ++;
+                                            /* 关机状态跳过组网测试菜单。 */
+                                            if (Setup.On_Off_flag == 0u && DisOpt == Opt1)
+                                            {
+                                                DisOpt = Opt2;
+                                            }
 											break;
 									}
 								 break;
@@ -955,6 +960,15 @@ void Key_task(void)
 						  UI.dis_data_flag = 1;           /* 立即重画一次         */
 						  break;
 						case 1:
+                            /* 拦截残留组网焦点，关机时不允许进入子页。 */
+                            if (Setup.On_Off_flag == 0u && DisOpt == Opt1)
+                            {
+                                DisOpt = Opt0;
+                                UI.Addr = Set_Addr1;
+                                UI.Sub2 = Sub2_None;
+                                UI.dis_data_flag = 1u;
+                                break;
+                            }
 								switch(DisOpt)
 								{
 										case Opt7:
@@ -1032,6 +1046,15 @@ void Key_task(void)
 									}
 									break;
 								case Opt1:
+                                    /* 关机时即使残留在组网页，也不得启动测试。 */
+                                    if (Setup.On_Off_flag == 0u)
+                                    {
+                                        UI.Setting_flag = 1u;
+                                        DisOpt = Opt0;
+                                        UI.Addr = Set_Addr1;
+                                        UI.Sub2 = Sub2_None;
+                                        break;
+                                    }
 									/* ★ V1_0_7（P1）：删掉「一键解绑 / 保存绑定」两个残留项（原因同 KEY1/K3）。
 									   CH584M 的组网页只画「开始组网(0) / 返回(1)」，所以这里只保留 0 和 1：
 									     0 开始组网 -> 开始测试（本地置状态，不发 cmd）
@@ -1236,6 +1259,11 @@ void Key_task(void)
 											break;
 										default:
 											DisOpt --;
+                                            /* 反向切换也跳过组网测试。 */
+                                            if (Setup.On_Off_flag == 0u && DisOpt == Opt1)
+                                            {
+                                                DisOpt = Opt0;
+                                            }
 											break;
 									}
 									break;
