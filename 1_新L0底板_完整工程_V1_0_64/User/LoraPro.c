@@ -202,6 +202,12 @@ static uint8_t s_report_host = 0U;
 static uint8_t s_report_partition = 0U;
 static uint32_t s_report_tick = 0U;
 static uint32_t s_report_tx_tick = 0U;
+/* Per-collection scheduling; never rebased by RF ACK/failure or UI re-arm. */
+#define LORA_REPORT_RELEASE_TICKS (((uint32_t)SLP_BOOT_WAIT_MS + (uint32_t)SLP_READ_TIMEOUT_MS + 99U) / 100U)
+static uint32_t s_report_release_tick = 0U;
+static uint32_t s_report_token_seq = 0U;
+static uint32_t s_report_token_tick = 0U;
+static uint16_t s_report_token_delay = 0U;
 static uint8_t s_report_tx_host = 0U;
 static uint8_t s_report_tx_partition = 0U;
 
@@ -211,9 +217,17 @@ void Lora_CancelCollectedReport(void)
     s_report_tx_seq = 0U;
     s_self_retry_wait = 0U;
     s_self_retry_seq = 0U;
+    s_report_token_seq = 0U;
 }
 
-void Lora_QueueCollectedReport(const uint8_t *channels)
+uint32_t Lora_SleepCollectionDelayTicks(void)
+{
+    uint32_t first = (uint32_t)SLP_FIRST_READ_DELAY_SEC * 10U;
+    if (first == 0U) { return 0U; }
+    return first - (LORA_STAGGER_PHASE % first);
+}
+
+void Lora_QueueCollectedReport(const uint8_t *channels, uint32_t planned_tick)
 {
     uint8_t i;
     uint16_t at;
@@ -231,6 +245,8 @@ void Lora_QueueCollectedReport(const uint8_t *channels)
     s_report_host = Setup.Host_number;
     s_report_partition = Setup.partition;
     s_report_tick = Rt_tick;
+    s_report_release_tick = planned_tick + LORA_REPORT_RELEASE_TICKS;
+    s_report_token_seq = 0U;
     s_report_pending = 1U;
     printf("[UP] READY seq=%lu tick=%lu\r\n",
            (unsigned long)s_report_seq, (unsigned long)Rt_tick);
@@ -272,13 +288,16 @@ static uint8_t lora_self_report_due(void)
     }
     if (s_report_pending != 0U)
     {
-        /* Collection makes data available, not eligible for immediate RF TX.
-           Finish UART/power-off first, then apply the existing stagger/token
-           rules below. Only the same failed generation may use its 30s retry. */
         if ((sleep_mode == 2U) && (g_slp_keep_awake != 0U)) { return 0U; }
+        /* Preserve the previous awake snapshot behavior and shared RF cooldown. */
+        if (sleep_mode != 2U) { return 1U; }
         if ((s_self_retry_wait != 0U) && (s_self_retry_seq == s_report_seq)) { return 1U; }
+        if ((int32_t)(Rt_tick - s_report_release_tick) >= 0) { return 1U; }
+        /* Only a token received for this queued generation can advance its slot.
+           The first token is latched; repeats cannot postpone the fixed deadline. */
+        return ((s_report_token_seq == s_report_seq) &&
+                (TickDiff_100ms(s_report_token_tick) > s_report_token_delay)) ? 1U : 0U;
     }
-    /* No periodic/token/boot entry may send cached values during quiet sleep. */
     else if (sleep_mode == 2U) { return 0U; }
     if (s_boot_stagger_done == 0U)
     {
@@ -294,6 +313,20 @@ static uint8_t lora_self_report_due(void)
             ((send_flag == 1U) && (TickDiff_100ms(Sx_tick) > send_time1)) ||
             ((s_report_pending == 0U) && (Ble_flag_data == 1U))) ? 1U : 0U;
 }
+static void lora_report_token_on_rx(uint16_t origin)
+{
+    uint16_t gap;
+    if ((sleep_mode != 2U) || (s_report_pending == 0U) ||
+        (s_report_token_seq == s_report_seq) ||
+        (s_report_host != Setup.Host_number) || (s_report_partition != Setup.partition) ||
+        (origin <= Setup.Host_number)) { return; }
+    gap = (uint16_t)(origin - Setup.Host_number);
+    if (gap > 3U) { return; }
+    s_report_token_seq = s_report_seq;
+    s_report_token_tick = Rt_tick;
+    s_report_token_delay = (uint16_t)(gap * 100U);
+}
+
 /* 校验和：从 0x55 起累加 len 字节（组包/校验共用同一算法）。 */
 uint8_t CalcCheckSum(u8 *buf,u16 len)
 {
@@ -1368,6 +1401,10 @@ uint8_t RxData_check(void)
   Cmd   = Lo_data.Rx_Buf[9]; //指令
 	
 
+    if ((Cmd == 0x0AU) && (Lo_data.Rx_Buf[0] == Setup.partition))
+    {
+        lora_report_token_on_rx(Lo_data.Rx_Buf[13]);
+    }
 	Addr_num=Lo_data.Rx_Buf[13];
 
 	LORA_FRAME_PRINT(" stu== %d;Send[%d]to[%d]  old== %d ;Cmd == %d\r\n",Lo_data.Rx_Buf[0],Lo_data.Rx_Buf[3],

@@ -201,7 +201,8 @@ void RfDataDeal(void);
 void CadPro(void);
 void Lora_task(void);
 /* Main-loop only: queue one completed 0x03 payload (20 channels, 80 bytes). */
-void Lora_QueueCollectedReport(const uint8_t *channels);
+uint32_t Lora_SleepCollectionDelayTicks(void);
+void Lora_QueueCollectedReport(const uint8_t *channels, uint32_t planned_tick);
 void Lora_CancelCollectedReport(void); /* Confirmed binding/identity change only. */
 /* ★ V1_0_56：从设置页回到主页 / 绑定流程结束后，把 LoRa 收发状态机拉回已知状态（幂等） */
 void Lora_HomeEntry_ReArm(void);
