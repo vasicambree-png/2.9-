@@ -195,6 +195,7 @@ static uint8_t s_report_data[LORA_REPORT_DATA_LEN];
 static uint8_t s_report_tx_data[LORA_REPORT_DATA_LEN];
 static uint8_t s_self_retry_wait = 0U;
 static uint32_t s_self_retry_tick = 0U;
+static uint32_t s_self_retry_seq = 0U;
 static uint8_t s_forward_turn = 0U;
 static uint32_t s_forward_ready_tick = 0U;
 static uint8_t s_report_host = 0U;
@@ -209,6 +210,7 @@ void Lora_CancelCollectedReport(void)
     s_report_pending = 0U;
     s_report_tx_seq = 0U;
     s_self_retry_wait = 0U;
+    s_self_retry_seq = 0U;
 }
 
 void Lora_QueueCollectedReport(const uint8_t *channels)
@@ -249,7 +251,8 @@ static void lora_self_report_complete(void)
 
 static void lora_self_report_retry(void)
 {
-    /* Retry timing is independent of the ten-minute collection/upload period. */
+    /* Only the failed generation has already passed the scheduling gate. */
+    s_self_retry_seq = s_report_tx_seq;
     s_report_tx_seq = 0U;
     s_self_retry_wait = 1U;
     s_self_retry_tick = Rt_tick;
@@ -266,15 +269,17 @@ static uint8_t lora_self_report_due(void)
     if (s_self_retry_wait != 0U)
     {
         if (TickDiff_100ms(s_self_retry_tick) < LORA_REPORT_RETRY_TICKS) { return 0U; }
-        s_self_retry_wait = 0U;
     }
     if (s_report_pending != 0U)
     {
-        /* Finish the UART read/power-off window before starting a new RF round. */
-        return ((sleep_mode == 2U) && (g_slp_keep_awake != 0U)) ? 0U : 1U;
+        /* Collection makes data available, not eligible for immediate RF TX.
+           Finish UART/power-off first, then apply the existing stagger/token
+           rules below. Only the same failed generation may use its 30s retry. */
+        if ((sleep_mode == 2U) && (g_slp_keep_awake != 0U)) { return 0U; }
+        if ((s_self_retry_wait != 0U) && (s_self_retry_seq == s_report_seq)) { return 1U; }
     }
     /* No periodic/token/boot entry may send cached values during quiet sleep. */
-    if (sleep_mode == 2U) { return 0U; }
+    else if (sleep_mode == 2U) { return 0U; }
     if (s_boot_stagger_done == 0U)
     {
         s_boot_stagger_done = 1U;
@@ -287,7 +292,7 @@ static uint8_t lora_self_report_due(void)
     if ((send_time1 == 0U) || (send_time1 > 600U)) { send_time1 = 300U; }
     return (((TickDiff_100ms(Lo_data.RfTick) >= Time_Lora_task) && (send_flag == 0U)) ||
             ((send_flag == 1U) && (TickDiff_100ms(Sx_tick) > send_time1)) ||
-            (Ble_flag_data == 1U)) ? 1U : 0U;
+            ((s_report_pending == 0U) && (Ble_flag_data == 1U))) ? 1U : 0U;
 }
 /* 校验和：从 0x55 起累加 len 字节（组包/校验共用同一算法）。 */
 uint8_t CalcCheckSum(u8 *buf,u16 len)
@@ -539,6 +544,8 @@ void Lora_send(void)
             }
             else if (self_due != 0U)
             {
+                s_self_retry_wait = 0U;
+                s_self_retry_seq = 0U;
                 s_report_tx_seq = (s_report_pending != 0U) ? s_report_seq : 0U;
                 if (s_report_tx_seq != 0U)
                 {
