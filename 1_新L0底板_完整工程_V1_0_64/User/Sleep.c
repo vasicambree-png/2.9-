@@ -557,7 +557,7 @@ void Light_check(void)
     uint8_t level;
     static uint8_t first_run = 1;
 
-    if (TickDiff_100ms(light_tick) > 11)
+    if (TickDiff_100ms(light_tick) > 5) /* 6 x 100ms; retain 3 confirmations. */
     {
         g_light_chk_cnt++;
         Light_on;
@@ -589,7 +589,7 @@ void Light_check(void)
             if (debouncing)
             {
                 stable_cnt++;
-                /* 新电平必须连续 LIGHT_CONFIRM_TICKS 次（3 次 ≈ 3.6s）不变才认可，
+                /* 新电平必须连续 LIGHT_CONFIRM_TICKS 次（3 次 ≈ 1.8s）不变才认可，
                    否则光噪声（1~5 秒振荡）会反复把设备点亮再入睡、白耗电。 */
                 if (stable_cnt >= LIGHT_CONFIRM_TICKS)
                 {
