@@ -89,11 +89,9 @@ Time_c rx_lora={0};
 extern volatile uint8_t  g_stop_woke_early;  /* Sleep.c£ºÉÏÒ»¾õÊÇ·ñÃ»Ë¯Âú 100ms ½ÚÅÄ */
 extern volatile uint32_t g_stop_early_cnt;   /* Sleep.c£ºÀÛ¼Æ"ÔçÐÑ"´ÎÊý£¨Õï¶Ï£©     */
 volatile uint32_t g_radio_settle_cnt = 0;    /* ±¾ÎÄ¼þ£ºÊµ¼Ê²¹µÈµÄ´ÎÊý£¨Õï¶Ï£©      */
-#define Time_RX_lora 500 /*ms¡£V1_0_57£º·¢ÉäÇ°µ¼ÒÑÍ³Ò»Îª 2000 ·ûºÅ = 128ms£¨SF5/BW500£©£¬
-                            Õû°ü×î»µ = 128(Ç°µ¼) + 6(ÔØºÉ) + ramp ¡Ö 140ms£»CAD ÃüÖÐºó
-                            »¹ÒªµÈÊ£ÓàÇ°µ¼+ÔØºÉ£¬ËùÒÔ 500ms ÈÔÊÇ"ºÜ¿íµ«²»±Ø¸Ä"µÄÖµ
-                            £¨¶à³öÀ´µÄÊ±¼äÖ»ÊÇ¶àÊÕÒ»»á¶ù£¬²»Ó°ÏìÊ±ÐòÕýÈ·ÐÔ£©¡£
-                            ´°¿ÚÄÚÃ¿Ò»ÂÖ¶¼±Ã´®¿Ú/°´¼ü£¬²»ÔÙËÀµÈ£¬¼û CAD_work£©*/
+#define Time_RX_lora 500 /* ms: relay preamble 384ms + header/payload fits this
+                            existing receive budget at SF5/BW500. Real RF delivery
+                            remains a hardware check; retain the current limit. */
 volatile uint8_t wait_rx_lora_flag=0;
 
 volatile  uint8_t Lora_Rx_flag=0;
@@ -117,22 +115,14 @@ extern volatile uint8_t sleep_mode;
 
 /* V1_0_57£º·¢Éä²ÎÊýÓë"È·ÈÏ´°¿Ú"¼¯ÖÐ¶¨Òå£¨Ô­À´ 4 ´¦Ó²±àÂë£¬ÓïÒå¸÷Ëµ¸÷»°£© */
 #define LORA_PREAMBLE_STATION      12U    /* Ä¿±ê=·ÖÕ¾(122)£º·ÖÕ¾³£Ìý£¬¶ÌÇ°µ¼¼´¿É        */
-#define LORA_PREAMBLE_NEIGHBOR   2000U    /* Ä¿±ê=ÁÚ¾Ó½Úµã¡£SF5/BW500 ÏÂ 2000 ·ûºÅ = 128ms£¬
-                                             ¶øÁÚ¾ÓµÄ CAD ²ÉÑùÖÜÆÚÊÇ 100ms£¨¼û CAD_SLOW_TICKS=1£©
-                                             -> 128/100 = 1.28 ±¶ÓàÁ¿£¬Óë¾ÉÉè±¸ rx_state==0
-                                             ·ÖÖ§µÄ 2000 ÍêÈ«Ò»ÖÂ£º¹»¸²¸Ç£¬ÓÖ²»Ïñ 6000 ÄÇÑù
-                                             °×Õ¼ 384ms ¿ÕÖÐ£¨6000 ÔÚ¾É»úÊµ¼ÊÓÃ²»µ½£©¡£
-                                             ¡ï ±¾Öµ°´ÓÃ»§¶Ô¾ÉÉè±¸µÄÊµ²â½áÂÛ¶¨Îª 2000¡£       */
-#define LORA_TX_CONFIRM_TICKS       8U    /* ·¢ÍêµÈÓ¦´ð£º8 ÅÄ = 800ms¡£°´ 2000 ·ûºÅÖØËã£º
-                                             ±¾»ú·¢Íê <= 128ms(Ç°µ¼) + 6ms(ÔØºÉ) + ramp
-                                             ~= 140ms£»ÁÚ¾Ó CAD ÃüÖÐÑÓ³Ù <= 100ms£»ÃüÖÐºó
-                                             Ê£ÓàÇ°µ¼+ÔØºÉ ~= 35ms£»ÁÚ¾Ó×ª·¢ÉÏÓÎ(ÔÙ 128ms)
-                                             + »Ø³Ì ~= 300~450ms -> ºÏ¼Æ ~= 500~700ms¡£
-                                             5 ÅÄ(500ms) Æ«½ô£¬8 ÅÄÓÐÓàÁ¿¡£Ó²Ô¼Êø£ºÒ»ÂÖ
-                                             9 ´Î x (800+140)ms ~= 8.5s < LORA_TX_STUCK_TICKS
-                                             (12s)£¬ÈÔÈ»ÓÐ½ç¡£                                */
-#define LORA_TX_STUCK_TICKS       120U    /* ·¢Éä×´Ì¬¶µµ×£ºÈÎÒ»·¢ÉäÌ¬Í£Áô > 12s Ç¿ÊÕÎ²¡£
-                                             Õý³£×î»µ ~8.5s£¬12s ×ã¹»¿í£¬¾ø²»ÎóÉË¡£            */
+#define LORA_PREAMBLE_NEIGHBOR   6000U    /* Relay coverage trial: SF5/BW500, 384ms preamble.
+                                             More margin for sleeping-neighbor CAD gaps.
+                                             Station transmissions still use 12 symbols. */
+#define LORA_TX_CONFIRM_TICKS       8U    /* Unchanged: 800ms, starting AFTER local TX
+                                             completes and RX opens. Relay queuing
+                                             delays still require field validation. */
+#define LORA_TX_STUCK_TICKS       120U    /* 12s watchdog for ONE unchanged TX state,
+                                             not a bound on the complete retry round. */
 #define LORA_CAD_BUSY_MAX          30U    /* Á¬Ðø 30 ´Î CAD ¶¼±¨"ÐÅµÀÃ¦" -> Ç¿·¢Ò»´Î          */
 #define LORA_STUCK_MS_AWAKE      60000U   /* ¿´ÃÅ¹·µÚ¶þÊ±»ù£¨HAL_GetTick£¬Ö»¼ÆÇåÐÑ ms£©£º
                                              ÍòÒ» LPTIM1 Í£×ßµ¼ÖÂ Rt_tick ¶³×¡£¬Ö÷Ñ­»·»¹ÔÚ
@@ -633,10 +623,10 @@ void Lora_send(void)
 						if(rx_state==0)
 						{
 				
-					    for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* V1_0_57: Ç°µ¼Í³Ò»ÓÉ LORA_PREAMBLE_NEIGHBOR ¸ø£¨2000 ·ûºÅ/128ms£© */
+					    for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* V1_0_57: Ç°µ¼Í³Ò»ÓÉ LORA_PREAMBLE_NEIGHBOR ¸ø£¨6000 ·ûºÅ/384ms£© */
 						}
 						else{
-						  for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* Í¬ÉÏ£º2000 ·ûºÅ/128ms */
+						  for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* Í¬ÉÏ£º6000 ·ûºÅ/384ms */
 						}
 					}
         // printf("self send addr == %d;for_send_num ==%d\r\n",Setup.transmit_number[send_adrr_cnt],for_send_num);
@@ -759,10 +749,10 @@ void Lora_send(void)
 								if(rx_state==0)
 								{
 				
-					            for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* V1_0_57: Ç°µ¼Í³Ò»ÓÉ LORA_PREAMBLE_NEIGHBOR ¸ø£¨2000 ·ûºÅ/128ms£© */
+					            for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* V1_0_57: Ç°µ¼Í³Ò»ÓÉ LORA_PREAMBLE_NEIGHBOR ¸ø£¨6000 ·ûºÅ/384ms£© */
 								}
 								else{
-									for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* Í¬ÉÏ£º2000 ·ûºÅ/128ms */
+									for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* Í¬ÉÏ£º6000 ·ûºÅ/384ms */
 								}
 
 						}
@@ -968,10 +958,9 @@ volatile uint32_t g_cad_cnt = 0;      /* ¡ï¡ï¡ï V1_0_12£ºCAD ÀÛ¼Æ´ÎÊý£¨´¿Õï¶ÏÁ¿£
                                        *   ±ØÐëÒ»Ö±ÔÚÕÇ£¬²»ÕÇ¾ÍÊÇ CAD ¿¨×¡ÁË¡£ */
 /* V1_0_27: auto gear switching by traffic countdown (see Timer_task). */
 #define CAD_FAST_TICKS     1U      /* fast gear: 100ms (TickDiff unit = 100ms) */
-#define CAD_SLOW_TICKS     1U      /* V1_0_57£ºÂýµµ¹Øµô = 100ms£¬±ØÐëÓë¿ìµµÍ¬Îª 100ms£º
-                                             Ç°µ¼ 2000 ·ûºÅ = 128ms£¬Èô CAD ÖÜÆÚ 200ms
-                                             Ôò 128 < 200 -> ½á¹¹ÐÔÂ©¼ì£¨¾ÍÊÇ"½á¹¹ÐÔÊÕ²»µ½"£©¡£
-                                             È«¹¤³ÌÍ³Ò» 100ms£º128/100 = 1.28x ÓàÁ¿£¬Í¬¾ÉÉè±¸¡£ */
+#define CAD_SLOW_TICKS     1U      /* Keep the nominal CAD check interval at 100ms.
+                                     Business-neighbor preamble is now 384ms;
+                                     actual scan gaps remain a field measurement. */
 #define CAD_HOLD_CYCLES    300U    /* hold FAST for 300 cycles after a packet (~30-60s) */
 static uint32_t s_cad_fast_hold = 0U;
 volatile uint32_t g_cad_fast_cnt = 0U;
@@ -1162,7 +1151,7 @@ void Timer_task(void)
         if (s_cad_fast_hold != 0U) { s_cad_fast_hold--; th = CAD_FAST_TICKS; g_cad_fast_cnt++; }
         else                       { g_cad_slow_cnt++; }
         if (TickDiff_100ms(s_lora_cad_tick) >= th)
-    /* V1_0_24: slow CAD mode removed -- with Tp=2000sym(128ms) the inequality Tp>=Tc*k forces Tc<=100ms, so there is no room for an idleµµ. Coverage first. */
+    /* Keep the existing nominal 100ms CAD schedule for relay reception. */
     {
         s_lora_cad_tick = Rt_tick;
         CAD_work();
@@ -1233,15 +1222,10 @@ static void boot_upload_check(void)
 }
 
 /* ==========================================================================
- * V1_0_57£º·¢Éä×´Ì¬¿´ÃÅ¹·£¨×îºóÒ»µÀ±£ÏÕ£¬²»Ó°ÏìÈÎºÎÕý³£Â·¾¶£©
- * --------------------------------------------------------------------------
- * ¸²¸Ç Tx_oneself / Tx_wait_oneself / Tx_Forwarding / Tx_wait_Forwarding ËÄ¸ö
- * ×´Ì¬£ºÖ»Òª"Í¬Ò»¸ö×´Ì¬"Á¬ÐøÍ£Áô³¬¹ý LORA_TX_STUCK_TICKS(120 ÅÄ = 12s)£¬¾ÍÇ¿ÖÆ
- * ÊÕ»Ø Tx_None ²¢Çå¸É¾»²ÐÖµ¡£
- * ÎªÊ²Ã´ 12s ×ã¹»¿í£¨²»»áÎóÉË£©£ºTx_wait_* ×î»µ = 3 µØÖ· x (1 + 2 ÖØÊÔ) x 8 ÅÄ
- * = 72 ÅÄ = 7.2s ±ØÈ»ÊÕÎ²£»Tx_oneself µÄÁ¬ÐøÅÐÃ¦×î¶à 30 ´Î(CAD ÖÜÆÚ 100~200ms)
- * ¡Ö 3~6s ¾ÍÇ¿·¢Ò»´Î£»Ò»´ÎÕæÕý·¢Éä×î³¤ = 2000 ·ûºÅÇ°µ¼(128ms) + ÔØºÉ + 5s ÉÏÏÞ¡£
- * È«²¿ <= 7.2s < 12s£¬ËùÒÔ´¥·¢ËüÒ»¶¨ÊÇÕæ¿¨×¡ÁË¡£
+ * V1_0_57: recover a TX state that remains unchanged for over 12 seconds.
+ * This is a per-state guard; a full multi-address retry round can take longer.
+ * Neighbor business frames now use a 384ms preamble; direct-station frames
+ * and the post-TX confirmation window retain their existing settings.
  * ========================================================================== */
 static void Lora_tx_watchdog(void)
 {

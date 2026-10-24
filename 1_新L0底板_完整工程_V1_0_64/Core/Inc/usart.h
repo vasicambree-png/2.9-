@@ -104,7 +104,7 @@ void hex_p(uint8_t *buf, int len);
  *   LCD_ON_Power / LCD_OFF_Power 宏极性正好相反，不要参考它们。
  * ========================================================================== */
 #define SLP_READ_ENABLE       1      /* 1 = 启用息屏读数据；0 = 退回旧行为 */
-#define SLP_READ_PERIOD_SEC   60U    /* 定位掉线测试：息屏采集及 LoRa 周期统一为 60 秒（1 分钟） */
+#define SLP_READ_PERIOD_SEC   600U   /* 10-minute collection and upload period. */
 #define SLP_FIRST_READ_DELAY_SEC  SLP_READ_PERIOD_SEC  /* 息屏后第一次读数据前先等多久；
                                          调试时改小（例如 10）可快速验证息屏读数据链 */
 #define UI_BOOT_WAIT_MS       400U   /* 上电/复位后等 CH584M 启动(实测~304ms)再发首帧 */
