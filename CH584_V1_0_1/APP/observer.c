@@ -164,7 +164,8 @@ static uint32_t g_rsp_sec = 0;
  * 按页面驱动口径就应是"只更新"；1 秒事件会在第一次 tick 时按页面重新判定。
  * （旧代码初值是 BIND，配合"开机 30 秒窗口"；窗口删除后 BIND 初值已无意义。） */
 volatile uint8_t g_scan_mode   = SCAN_MODE_DATA;   /* 由 1 秒事件按当前页面切换 */
-volatile uint8_t g_scan_enable = 1;                /* 1 = 广播扫描/解析启用（预留） */
+volatile uint8_t g_scan_enable = 1;                /* Updated from committed controller state. */
+static uint8_t g_observer_ready = 0;
 
 /* ================= 采集期打印降噪开关（任务 A-3） =================
  * 逐通道 / 逐包的 PRINT 是采集期最大的软件开销：PRINT → printf → _write()
@@ -307,6 +308,30 @@ extern data_LIST Data_list1;
  *
  * @return  none
  */
+/* Main-loop/TMOS context only. Keep bindings and last readings intact. */
+void observer_set_collection_enabled(uint8_t state)
+{
+    uint8_t enabled = (state == 1u);
+    if (enabled == g_scan_enable) return;
+
+    /* Close the producer gate before cancellation can report completion. */
+    g_scan_enable = enabled;
+    g_adv_q_head = g_adv_q_tail;
+    g_adv_seen = 0;
+    g_adv_quiet_sec = 0;
+    if (!enabled)
+    {
+        observer_round_clear(); /* Do not report a partial pre-stop round. */
+        if (g_observer_ready) GAPRole_ObserverCancelDiscovery();
+    }
+    else if (g_observer_ready)
+    {
+        GAPRole_ObserverStartDiscovery(DEFAULT_DISCOVERY_MODE,
+                                       DEFAULT_DISCOVERY_ACTIVE_SCAN,
+                                       DEFAULT_DISCOVERY_WHITE_LIST);
+    }
+}
+
 void Observer_Init()
 {
       ObserverTaskId = TMOS_ProcessEventRegister(Observer_ProcessEvent);
@@ -412,9 +437,11 @@ static void ObserverEventCB(gapRoleEvent_t *pEvent)
     {
         case GAP_DEVICE_INIT_DONE_EVENT:
         {
-            GAPRole_ObserverStartDiscovery(DEFAULT_DISCOVERY_MODE,
-                                           DEFAULT_DISCOVERY_ACTIVE_SCAN,
-                                           DEFAULT_DISCOVERY_WHITE_LIST);
+            g_observer_ready = 1;
+            if (g_scan_enable)
+                GAPRole_ObserverStartDiscovery(DEFAULT_DISCOVERY_MODE,
+                                               DEFAULT_DISCOVERY_ACTIVE_SCAN,
+                                               DEFAULT_DISCOVERY_WHITE_LIST);
             /* ★ 契约 §2.3：本事件也在 BLE 回调（ObserverEventCB）路径上 ⇒ 走 BLE_LOG。
              *   一次性开机日志（默认静音后由 1 秒摘要行承担可观测性）。 */
             BLE_LOG("Discovering...\n");
@@ -433,9 +460,10 @@ static void ObserverEventCB(gapRoleEvent_t *pEvent)
         {
             //PRINT("Discovery over...\n");
 
-            GAPRole_ObserverStartDiscovery(DEFAULT_DISCOVERY_MODE,
-                                           DEFAULT_DISCOVERY_ACTIVE_SCAN,
-                                           DEFAULT_DISCOVERY_WHITE_LIST);
+            if (g_scan_enable)
+                GAPRole_ObserverStartDiscovery(DEFAULT_DISCOVERY_MODE,
+                                               DEFAULT_DISCOVERY_ACTIVE_SCAN,
+                                               DEFAULT_DISCOVERY_WHITE_LIST);
 
         }
         break;
@@ -1896,6 +1924,12 @@ void observer_adv_drain(uint16_t max_items)
     adv_q_entry_t *e;
     uint16_t       n = 0;
     uint8_t        backlog;
+
+    if (!g_scan_enable)
+    {
+        g_adv_q_head = g_adv_q_tail;
+        return;
+    }
 
     backlog = (uint8_t)((g_adv_q_tail - g_adv_q_head) & (uint8_t)(ADV_Q_DEPTH - 1));
     if (backlog > g_adv_q_max) g_adv_q_max = backlog;

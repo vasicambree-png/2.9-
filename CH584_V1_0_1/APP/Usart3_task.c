@@ -1173,6 +1173,7 @@ uint8_t parse_received_frame(uint8_t *rx_buffer, uint16_t data_len, data_LIST *p
                   pData->UI_main.send_host_num = param_data[pos++];
                   pData->UI_main.sub_num       = param_data[pos++];
                   pData->UI_main.state         = param_data[pos++];
+                  observer_set_collection_enabled(pData->UI_main.state);
 
                   pData->UI_main.Lora_rssi     = param_data[pos++];
 
@@ -1332,6 +1333,17 @@ uint8_t parse_received_frame(uint8_t *rx_buffer, uint16_t data_len, data_LIST *p
                   if (param_cnt < 1)
                   {
                       return 11;   /* 提示页必须带 1 个参数 */
+                  }
+                  /* Settings pages carry an editable draft, not Setup.
+                   * Apply it only after Save_data reports a save attempt:
+                   * the controller updates RAM before its EEPROM write,
+                   * so even SAVE_FAIL already changed the running state. */
+                  if (((uint8_t)param_data[0] == UI_MSG_PARAM_SAVE_OK ||
+                       (uint8_t)param_data[0] == UI_MSG_PARAM_SAVE_FAIL) &&
+                      (pData->menu_rank == 2u || pData->menu_rank == 3u) &&
+                      pData->rank2_addr == 5u)
+                  {
+                      observer_set_collection_enabled(pData->Menu_rank6.state);
                   }
                   ui_show_msg((uint8_t)(param_data[0] & 0xFFU));
                   if (g_ui_msg == UI_MSG_POWER_OFF || g_ui_msg == UI_MSG_SHUTTING_DOWN)

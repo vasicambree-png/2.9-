@@ -12,6 +12,7 @@ scan_binding g_binding_list[MAX_BINDING_NUM];
 uint8_t g_binding_count, g_volt_err_count, g_name_err_count;
 name_change_err_t g_name_err_list[NAME_CHK_ERR_NUM];
 volatile uint8_t g_scan_mode;
+void observer_set_collection_enabled(uint8_t state) { (void)state; }
 uint8_t count_used_channels(void) { return 0u; }
 #define START_IO_EVT 1u
 #define START_DATA_EVT 2u

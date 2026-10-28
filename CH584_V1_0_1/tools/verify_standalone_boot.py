@@ -61,7 +61,9 @@ def main():
     assert "ui_show_msg(" not in rank5
     message = uart[uart.index("\n              case 6:"):uart.index("\n              default:", uart.index("\n              case 6:"))]
     message = message.split(":", 1)[1].rsplit("break;", 1)[0]
-    assert "pData->" not in message
+    # Save-result handling may read the cached settings draft to update BLE,
+    # but messages must still never overwrite the cached page fields.
+    assert not re.search(r"pData->[\w.]+\s*(?:=(?!=)|\+=|-=|\+\+|--)", message)
     cmd03 = uart[uart.index("        case 0x03:"):uart.index("        case 0x04:")]
     assert not re.search(r"screen_(?:power|startup)|g_ui_msg|u8g2|UI_Control", cmd03)
     frame_head = uart[uart.index("uint8_t parse_received_frame("):uart.index("    switch(cmd)")]
@@ -102,7 +104,8 @@ def main():
         "static void accept_page(unsigned menu_rank) { data_LIST *pData=&Data_list1; "
         "uint8_t rank2=pData->rank2_addr, rank3=pData->rank3_addr;\n" + page_tail + "\n}",
         "static void accept_rank5(void) {\n" + rank5 + "\n}",
-        "static unsigned accept_msg(unsigned code) { unsigned param_cnt=1; uint16_t param_data[1]; "
+        "static unsigned accept_msg(unsigned code) { data_LIST *pData=&Data_list1; "
+        "unsigned param_cnt=1; uint16_t param_data[1]; "
         "param_data[0]=(uint16_t)code;\n" + message + "\n return 0; }"))
     (OUT / "startup_paths.c").write_text(production, encoding="utf-8")
     quote = lambda p: '"' + str(p) + '"'
