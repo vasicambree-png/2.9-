@@ -92,7 +92,7 @@ int main(void)
 #endif
     DelayMs(50);
     PRINT("%s\n", VER_LIB);
-    PRINT("[FW] BLE_POWER_PERSIST_20261028_3\r\n");
+    PRINT("[FW] BLE_DISPLAY_STATE_20261028_4\r\n");
     PRINT("[RESET] enabled=%u cause=0x%02X\r\n",
           (unsigned int)reset_enabled, (unsigned int)reset_cause);
     if (!reset_enabled)
@@ -148,7 +148,7 @@ int main(void)
     {
         uint8_t saved_state = 0;
         if (power_state_store_load(&saved_state) == 0u)
-            observer_set_collection_enabled(saved_state);
+            observer_set_power_state(saved_state);
     }
 
     PRINT("[BOOT] 10 Main_Circulation\r\n");

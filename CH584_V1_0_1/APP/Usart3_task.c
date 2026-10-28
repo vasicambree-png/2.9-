@@ -796,7 +796,6 @@ uint16_t usart_ProcessEvent(uint8_t task_id, uint16_t events)
          *        本来就在跑（正常，会随现场无广播源每 10 秒 +1）/ 其它=异常。 */
         observer_ble_stat_tick();
         observer_ble_diag_tick();   /* ★ 第 9 轮：每 5 秒无条件打印扫描诊断 */
-        observer_power_diag_tick();
         ui_latency_report();        /* Diagnostic build only; at most once per second. */
 
     tmos_start_task(usartTaskId, START_TIMER_EVT, 1600);//10ms
@@ -1174,7 +1173,7 @@ uint8_t parse_received_frame(uint8_t *rx_buffer, uint16_t data_len, data_LIST *p
                   pData->UI_main.send_host_num = param_data[pos++];
                   pData->UI_main.sub_num       = param_data[pos++];
                   pData->UI_main.state         = param_data[pos++];
-                  observer_set_collection_enabled(pData->UI_main.state);
+                  observer_set_power_state(pData->UI_main.state);
 
                   pData->UI_main.Lora_rssi     = param_data[pos++];
 
@@ -1344,7 +1343,7 @@ uint8_t parse_received_frame(uint8_t *rx_buffer, uint16_t data_len, data_LIST *p
                       (pData->menu_rank == 2u || pData->menu_rank == 3u) &&
                       pData->rank2_addr == 5u)
                   {
-                      observer_set_collection_enabled(pData->Menu_rank6.state);
+                      observer_set_power_state(pData->Menu_rank6.state);
                   }
                   ui_show_msg((uint8_t)(param_data[0] & 0xFFU));
                   if (g_ui_msg == UI_MSG_POWER_OFF || g_ui_msg == UI_MSG_SHUTTING_DOWN)

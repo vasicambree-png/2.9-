@@ -1,4 +1,4 @@
-"""Replay production scan gates with mock BLE/scheduler boundaries; no hardware."""
+"""Replay saved display state and continuous BLE collection; no hardware."""
 from pathlib import Path
 import argparse
 import re
@@ -22,7 +22,7 @@ def block(source, marker):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vcvars", type=Path, required=True)
-    parser.add_argument("--out", default="verification/ble_power_gate_20261028/host")
+    parser.add_argument("--out", default="verification/ble_display_only_20261028/gate_host")
     args = parser.parse_args()
     assert args.vcvars.is_file()
     out = (ROOT / args.out).resolve()
@@ -30,17 +30,16 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     observer = (ROOT / "APP/observer.c").read_text(encoding="utf-8")
     uart = (ROOT / "APP/Usart3_task.c").read_text(encoding="utf-8")
-    # Use real startup initializers: a default-on regression must fail the replay.
+    # Use real startup initializers: the saved state must not disable collection.
     boot_globals = "\n".join(re.search(
         r"(?m)^(?:(?:static|volatile)\s+)*uint(?:8|32)_t\s+" + name + r"\s*=\s*[^;]+;",
-        observer).group() for name in ("g_scan_enable", "g_observer_ready",
-        "g_collection_state", "g_collection_state_seen", "g_collection_state_frames"))
+        observer).group() for name in ("g_scan_enable", "g_power_state", "g_power_state_seen"))
     queue = observer[observer.index("typedef struct\n{\n    uint8_t addr[6];"):
                      observer.index("/* ---- 可见性计数")]
     save = block(uart, "if (((uint8_t)param_data[0] == UI_MSG_PARAM_SAVE_OK ||")
     # Only committed home state and a settings-save result may change the gate.
-    assert uart.count("observer_set_collection_enabled(") == 2
-    assert "observer_set_collection_enabled(pData->UI_main.state);" in uart
+    assert uart.count("observer_set_power_state(") == 2
+    assert "observer_set_power_state(pData->UI_main.state);" in uart
     prefix = r'''
 #include <assert.h>
 #include <stdint.h>
@@ -82,18 +81,16 @@ static uint8_t power_state_store_save(uint8_t state)
 { assert(state<=1u); ++store_attempts; return (uint8_t)store_fail; }
 static bStatus_t GAPRole_ObserverStartDiscovery(unsigned a,unsigned b,unsigned c)
 { (void)a; (void)b; (void)c; ++starts; return SUCCESS; }
-static bStatus_t GAPRole_ObserverCancelDiscovery(void) { ++cancels; return SUCCESS; }
 static void sacn_process_packet(uint8_t *a,uint8_t b,uint8_t *c,uint16_t d,int e)
 { (void)a; (void)b; (void)c; (void)d; (void)e; ++processed; }
 void SACN_DATA(uint8_t *,uint8_t,uint8_t *,uint16_t,int);
 '''
     production = "\n".join(block(observer, marker) for marker in (
-        "void observer_round_clear(void)",
-        "void observer_set_collection_enabled(uint8_t state)",
+        "void observer_set_power_state(uint8_t state)",
+        "uint8_t observer_values_visible(void)",
         "static void ObserverEventCB(gapRoleEvent_t *pEvent)",
         "void observer_adv_drain(uint16_t max_items)",
         "void observer_ble_stat_tick(void)",
-        "void observer_power_diag_tick(void)",
         "void SACN_DATA(uint8_t *addr, uint8_t EVENT, uint8_t *data, uint16_t data_len, int Rssi)"))
     ui = r'''
 #define UI_MSG_PARAM_SAVE_OK 1u
@@ -103,98 +100,62 @@ static void save_message(test_page_t *pData, unsigned code)
 { uint16_t param_data[1]={(uint16_t)code};
 '''+save+"\n}\n"
     tests = r'''
-int main(int argc, char **argv)
+int main(void)
 {
-    (void)argv;
     gapRoleEvent_t event={0};
     uint8_t addr[6]={1}, data[3]={2,3,4};
     test_page_t page={3,5,{0}};
-    /* Reproduce the reported 2.3-second gap: stack starts before an OFF frame.
-     * Unknown state must not scan or accept a single advertisement. */
-    if (g_collection_state_seen || g_scan_enable) {
-        puts("FAIL: collection enabled before any controller state after reset");
-        return 1;
-    }
-    if (argc > 1) {
-        observer_set_collection_enabled(1);
-        assert(g_scan_enable && !starts && !g_observer_ready);
-        event.gap.opcode=GAP_DEVICE_INIT_DONE_EVENT; ObserverEventCB(&event);
-        SACN_DATA(addr,0,data,3,-40); observer_adv_drain(16);
-        assert(starts==1 && processed==1 && g_adv_rx_cnt==1);
-        puts("PASS: explicit ON before BLE initialization starts normal collection");
-        return 0;
-    }
+    assert(g_scan_enable && !observer_values_visible());
     event.gap.opcode=GAP_DEVICE_INIT_DONE_EVENT; ObserverEventCB(&event);
-    for(unsigned i=0;i<3;i++) {
-        SACN_DATA(addr,0,data,3,-40); observer_adv_drain(16);
-        observer_ble_stat_tick();
-    }
-    assert(!g_scan_enable && !starts && !cancels);
-    assert(!processed && !g_adv_rx_cnt);
-    observer_set_collection_enabled(0); /* Delayed controller OFF arrives. */
-    assert(store_attempts==1);
-    observer_set_collection_enabled(0); assert(store_attempts==1);
-    event.gap.opcode=GAP_DEVICE_DISCOVERY_EVENT; ObserverEventCB(&event);
-    assert(g_observer_ready && !starts);
-    for(unsigned i=0;i<25;i++) observer_ble_stat_tick();
-    SACN_DATA(addr,0,data,3,-40); observer_adv_drain(16);
-    assert(!starts && !processed && !g_adv_rx_cnt);
-    /* Resume immediately; repeated state frames do not restart scanning. */
-    observer_set_collection_enabled(1); observer_set_collection_enabled(1);
-    assert(starts==1 && g_scan_enable);
+    assert(starts==1);
     SACN_DATA(addr,0,data,3,-40); observer_adv_drain(16);
     assert(processed==1 && g_adv_rx_cnt==1);
-    /* Queued pre-stop readings and a partial report must not survive off. */
-    SACN_DATA(addr,0,data,3,-40); g_round_mask=7; g_adv_quiet_sec=9;
-    observer_set_collection_enabled(0);
-    assert(cancels==1 && !g_adv_seen && !g_adv_quiet_sec && !g_round_mask);
-    observer_adv_drain(16); ObserverEventCB(&event);
-    assert(processed==1 && starts==1);
-    /* A late producer callback is rejected; even a stale queue is drained safely. */
-    SACN_DATA(addr,0,data,3,-40);
-    g_adv_q_tail=(uint8_t)((g_adv_q_head+1)&63);
-    observer_adv_drain(16); assert(g_adv_q_head==g_adv_q_tail && processed==1);
-    observer_set_collection_enabled(1);
+    g_round_mask=7;
+    SACN_DATA(addr,0,data,3,-40); /* Queue must survive a display-state change. */
+    uint8_t head=g_adv_q_head,tail=g_adv_q_tail;
+    observer_set_power_state(0);
+    assert(g_scan_enable && !observer_values_visible() && store_attempts==1);
+    assert(g_adv_q_head==head && g_adv_q_tail==tail && g_round_mask==7);
+    for(unsigned i=0;i<20;i++) observer_set_power_state(0);
+    assert(store_attempts==1 && starts==1 && !cancels);
+    observer_adv_drain(16); assert(processed==2);
     event.gap.opcode=GAP_DEVICE_DISCOVERY_EVENT; ObserverEventCB(&event);
-    assert(starts==3);
+    assert(starts==2); /* OFF still restarts normal scanning. */
+    g_adv_seen=0;
     for(unsigned i=0;i<10;i++) observer_ble_stat_tick();
-    assert(starts==4 && g_scan_restart_cnt==1);
-    /* Draft editing/cancel is untouched; only the real save branch applies it. */
-    assert(g_scan_enable); save_message(&page,3); assert(g_scan_enable);
-    save_message(&page,UI_MSG_PARAM_SAVE_OK); assert(!g_scan_enable);
-    page.Menu_rank6.state=1; save_message(&page,UI_MSG_PARAM_SAVE_FAIL);
-    assert(g_scan_enable); /* RAM was changed before EEPROM persistence failed. */
-    page.rank2_addr=4; page.Menu_rank6.state=0;
-    save_message(&page,UI_MSG_PARAM_SAVE_OK); assert(g_scan_enable);
-    page.rank2_addr=5; page.menu_rank=1;
-    save_message(&page,UI_MSG_PARAM_SAVE_OK); assert(g_scan_enable);
-    for(unsigned i=0;i<70;i++) {
-        observer_set_collection_enabled(0); ObserverEventCB(&event);
-        SACN_DATA(addr,0,data,3,-40); observer_adv_drain(16);
-        observer_set_collection_enabled(1);
-        SACN_DATA(addr,0,data,3,-40); observer_adv_drain(16);
-    }
-    assert(processed==71);
-    assert(g_collection_state_seen && g_collection_state==1 && g_collection_state_frames>140);
-    store_fail=1;
+    assert(starts==3 && g_scan_restart_cnt==1);
+    observer_set_power_state(1);
+    assert(observer_values_visible() && g_scan_enable && starts==3);
     unsigned attempted=store_attempts;
-    observer_set_collection_enabled(0);
-    assert(!g_scan_enable && store_attempts==attempted+1);
-    for(unsigned i=0;i<20;i++) observer_set_collection_enabled(0);
-    assert(store_attempts==attempted+1); /* A failure cannot hammer Flash per frame. */
-    unsigned before=diagnostics;
-    for(unsigned i=0;i<9;i++) observer_power_diag_tick();
-    assert(diagnostics==before);
-    observer_power_diag_tick(); assert(diagnostics==before+1);
-    puts("PASS: production BLE gates, late callbacks, queue wrap, watchdog and settings-save semantics");
+    observer_set_power_state(1); assert(store_attempts==attempted);
+    save_message(&page,3); assert(observer_values_visible());
+    save_message(&page,UI_MSG_PARAM_SAVE_OK);
+    assert(!observer_values_visible() && g_scan_enable);
+    page.Menu_rank6.state=1; store_fail=1;
+    save_message(&page,UI_MSG_PARAM_SAVE_FAIL);
+    assert(observer_values_visible() && g_scan_enable);
+    attempted=store_attempts;
+    for(unsigned i=0;i<20;i++) observer_set_power_state(1);
+    assert(store_attempts==attempted); /* Failed persistence cannot hammer Flash. */
+    page.rank2_addr=4;page.Menu_rank6.state=0;
+    save_message(&page,UI_MSG_PARAM_SAVE_OK); assert(observer_values_visible());
+    for(unsigned i=0;i<70;i++) {
+        observer_set_power_state((uint8_t)(i&1u));
+        SACN_DATA(addr,0,data,3,-40); observer_adv_drain(16);
+        assert(g_scan_enable && observer_values_visible()==(i&1u));
+    }
+    assert(processed==72 && g_adv_rx_cnt==72 && g_round_mask==7 && !cancels);
+    observer_set_power_state(0);attempted=store_attempts;
+    observer_set_power_state(2);
+    assert(!observer_values_visible() && g_scan_enable && store_attempts==attempted);
+    puts("PASS: ON/OFF only controls visibility/persistence; BLE producer, drain, restart and watchdog continue; queued data/round preserved");
     return 0;
 }
 '''
     (out / "test.c").write_text(prefix+boot_globals+queue+production+ui+tests, encoding="utf-8")
     command = ('@echo off\ncall "'+str(args.vcvars)+'" >nul\n'
                'if errorlevel 1 exit /b 1\ncl /nologo /utf-8 /W4 test.c /Fe:test.exe\n'
-               'if errorlevel 1 exit /b 1\ntest.exe\n'
-               'if errorlevel 1 exit /b 1\ntest.exe on-before-init\n')
+               'if errorlevel 1 exit /b 1\ntest.exe\n')
     script = out / "run.cmd"
     script.write_text(command, encoding="utf-8")
     result = subprocess.run(["cmd.exe", "/d", "/c", str(script)], cwd=out,

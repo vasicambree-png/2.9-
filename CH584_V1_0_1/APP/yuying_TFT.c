@@ -721,9 +721,11 @@ void UI_Main_Display(data_LIST *pData)
     if (page == 1u)
     {
         uint8_t voltage_size = HOME_HEADER_BATTERY_SIZE;
-        sprintf(buf, "%d.%d%dV",
-                pData->UI_main.vbat / 100, pData->UI_main.vbat % 100 / 10,
-                pData->UI_main.vbat % 100 % 10);
+        if (observer_values_visible())
+            sprintf(buf, "%d.%d%dV",
+                    pData->UI_main.vbat / 100, pData->UI_main.vbat % 100 / 10,
+                    pData->UI_main.vbat % 100 % 10);
+        else strcpy(buf, "--");
         w = ui_text_width(buf, HOME_HEADER_BATTERY_SIZE);
         /* Reserve the enlarged icon and its gap even for uint16_t extremes. */
         if (w > HOME_HEADER_BATTERY_MAX_W)
@@ -788,7 +790,7 @@ void UI_Main_Display(data_LIST *pData)
             ui_text_draw((uint16_t)(cx + HOME_NUM_W), y, CH_TYPE_NAME[display_type], HOME_TEXT_SIZE);
             unit_w = ui_text_width(unit, HOME_TEXT_SIZE);
             unit_x = (uint16_t)(cx + HOME_DATA_RIGHT - unit_w);
-            if (d->valid && d->data_re_flag)
+            if (observer_values_visible() && d->valid && d->data_re_flag)
                 ch_disp_format(buf, sizeof(buf), display_type, d->CH_data);
             else strcpy(buf, "--");
             value_w = ui_text_width(buf, HOME_TEXT_SIZE);
@@ -1595,7 +1597,7 @@ static void install_ch_page(uint8_t kind)
         y = (uint16_t)(PARAM_GRID_TOP + 11u + PARAM_ROW_H * (ch % PARAM_ROWS));
         d = &CH_com_buf[ch];
         ui_param_number(cx, y, (uint8_t)(ch + 1u));
-        if (!(d->valid && d->data_re_flag)) strcpy(buf, "--");
+        if (!observer_values_visible() || !(d->valid && d->data_re_flag)) strcpy(buf, "--");
         else if (kind == 3u) sprintf(buf, "%d dBm", (int)(int8_t)d->rssi);
         else sprintf(buf, "%d.%d V", d->voltage / 10, d->voltage % 10);
         ui_param_value(cx, y, buf);

@@ -59,9 +59,10 @@ extern "C" {
 #define SCAN_MODE_DATA      0       /* 只更新：按绑定表填数据 */
 #define SCAN_MODE_BIND      1       /* 绑定：解析名字 + add_binding */
 extern volatile uint8_t g_scan_mode;    /* 由 1 秒事件按当前页面切换（见上） */
-extern volatile uint8_t g_scan_enable;  /* Disabled after reset until explicit committed ON. */
-/* Main-loop/TMOS only: state 1 resumes collection, other values stop it. */
-void observer_set_collection_enabled(uint8_t state);
+extern volatile uint8_t g_scan_enable;  /* Broadcast gate, independent of saved display state. */
+/* Main-loop/startup only: save the effective ON/OFF state without stopping BLE. */
+void observer_set_power_state(uint8_t state);
+uint8_t observer_values_visible(void);
 
 /* ---------------- 广播回调异步化（契约 §2.2，2026-09-22 冻结） ----------------
  * SACN_DATA()（BLE 广播回调）**只入队**；解析名字/payload、绑定、填通道、写名字快照
@@ -80,7 +81,6 @@ void observer_adv_drain(uint16_t max_items);
  *   - 看门狗：连续 ADV_QUIET_RESTART_SEC(10) 秒没有任何广播包且 g_scan_enable=1 时
  *     重新 GAPRole_ObserverStartDiscovery()（兜底 TGAP_DISC_SCAN=0 的语义风险）。 */
 void observer_ble_stat_tick(void);
-void observer_power_diag_tick(void); /* 10-second receive/gate snapshot, main loop only. */
 void observer_ble_diag_tick(void);   /* 第 9 轮：蓝牙扫描诊断打印 */
 
 /* 回调路径日志总闸（契约 §2.3）：默认 0 = 静音。

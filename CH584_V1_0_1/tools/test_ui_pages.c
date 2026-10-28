@@ -12,6 +12,7 @@ scan_binding g_binding_list[MAX_BINDING_NUM];
 uint8_t g_binding_count, g_volt_err_count, g_name_err_count;
 name_change_err_t g_name_err_list[NAME_CHK_ERR_NUM];
 volatile uint8_t g_scan_mode;
+uint8_t observer_values_visible(void) { return Data_list1.UI_main.state == 1u; }
 
 uint8_t count_used_channels(void) { return g_binding_count ? 20u : 0u; }
 
@@ -30,6 +31,7 @@ static void prepare_data(unsigned state)
     g_volt_err_count = state == 2 ? 3u : 0u;
     g_name_err_count = state == 2 ? 3u : 0u;
     Data_list1.Type = TPYE_MG;
+    Data_list1.UI_main.state = 1u;
     Data_list1.UI_main.vbat = state == 2 ? 65535u : 373u;
     Data_list1.UI_main.host_num = 23u;
     Data_list1.UI_main.sub_num = 9u;
