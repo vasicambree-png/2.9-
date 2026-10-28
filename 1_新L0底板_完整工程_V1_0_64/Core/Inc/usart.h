@@ -24,6 +24,12 @@ extern UART_HandleTypeDef huart1;   // USART1 -> CH584M display
 extern UART_HandleTypeDef huart2;   // USART2 -> debug printf
 
 void MX_USART1_UART_Init(void);
+void UART1_DeInitSafe(void);
+void UART1_IRQHandlerSafe(void);
+void UART1_DiagBootReport(void); /* Before CheckResetReason clears reset flags. */
+void UART1_DiagHardFault(void); /* ISR-safe retained checkpoint; no printing. */
+uint8_t UART1_InitReady(void); /* False after initialization failure or DeInit. */
+uint32_t HAL_UART_InitWaitExpired(UART_HandleTypeDef *huart, uint32_t flag); /* Project HAL extension. */
 void MX_USART2_UART_Init(void);
 void UART1_SendString(const char *str);
 

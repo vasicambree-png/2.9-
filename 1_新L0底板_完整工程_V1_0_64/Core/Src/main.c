@@ -77,6 +77,7 @@ int main(void)
 
  // HAL_Delay(100);
 
+  UART1_DiagBootReport(); /* Before reset flags are cleared. */
   CheckResetReason();
 
   MX_GPIO_Init();

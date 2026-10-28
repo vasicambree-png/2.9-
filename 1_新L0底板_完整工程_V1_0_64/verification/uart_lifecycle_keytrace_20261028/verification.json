@@ -1,0 +1,186 @@
+{
+  "verified": true,
+  "artifact": "底板_V1_0_64_UART生命周期修复_关键诊断_10分钟_20261028.hex",
+  "sha256": "74b4342ea65eaa0c8dbef96ac7c554a4ddad018770370cb68767ad54e9726d92",
+  "firmware_tag": "LK3_20261028",
+  "build_errors": 0,
+  "build_warnings": 50,
+  "warning_set_unchanged": true,
+  "program": {
+    "code": 51252,
+    "ro": 2652,
+    "rw": 724,
+    "zi": 7044,
+    "ram_reserved": 7768,
+    "ram_unassigned": 424
+  },
+  "retained": {
+    "address": "0x20001fc0",
+    "bytes": 64,
+    "uninit": true,
+    "startup_initialization_excludes_retained": true,
+    "scatter_entries": [
+      {
+        "source": "0x800d290",
+        "destination": "0x20000000",
+        "bytes": 724,
+        "handler": "0x8000a3c"
+      },
+      {
+        "source": "0x800d2cc",
+        "destination": "0x200002d4",
+        "bytes": 6980,
+        "handler": "0x8009020"
+      }
+    ]
+  },
+  "period_sec": 600,
+  "neighbor_preamble": 2000,
+  "confirm_ticks": 8,
+  "initial_sp": "0x20001e18",
+  "reset_vector": "0x80000d9",
+  "hex_axf_equal": true,
+  "tests": {
+    "uart-tests": {
+      "compile_exit": 0,
+      "test_exit": 0,
+      "retained_bytes": 64,
+      "production_functions": [
+        "MX_USART1_UART_Init",
+        "UART1_DeInitSafe",
+        "UART1_IRQHandlerSafe",
+        "uart1_checkpoint",
+        "UART1_DiagBootReport",
+        "UART1_DiagHardFault",
+        "uart1_rx_arm",
+        "sensor_rx_start",
+        "sensor_rx_ensure_armed",
+        "HAL_UART_InitWaitExpired",
+        "UART_CheckIdleState",
+        "UART_WaitOnFlagUntilTimeout"
+      ],
+      "source_sha256": {
+        "Core/Src/usart.c": "ec2d062575c5d04f4580184b8a627eca54bb0edc53851dbfab4ba94b8b706c51",
+        "Core/Inc/usart.h": "ea4e4e1f4c05495848219b6842abf56b0b05ea4d0fc2abfc81050de03dfd9494",
+        "Core/Src/main.c": "b5c5d34a8284b25bdacd2fcc09c212531a9343b64881f2ca4cb8c1f0d7e5ef91",
+        "Core/Src/stm32l0xx_it.c": "88db81192124fe545448795da7886a69b658ad9b992241bcd7641011425f6b57",
+        "MDK-ARM/MX_02.uvprojx": "6db8eed37fb8aafc9b5ec0d3d63bf25e18e56d0c7affea209001de30329b8b2c",
+        "MDK-ARM/uart_fault_noinit.sct": "3ecc6e6e35853ac3f7f04977936954072a390d2eb13e3b3e0f192e16f4e823ec"
+      },
+      "hardware_verified": false
+    },
+    "priority-trace-tests": {
+      "compile_exit": 0,
+      "test_exit": 0,
+      "hardware_verified": false,
+      "tests": {
+        "storm": {
+          "exit": 0,
+          "events_printed": 9,
+          "lines": 35,
+          "passed": true
+        },
+        "correlation": {
+          "exit": 0,
+          "events_printed": 5,
+          "lines": 15,
+          "passed": true
+        },
+        "bounds": {
+          "exit": 0,
+          "events_printed": 17,
+          "lines": 39,
+          "passed": true
+        },
+        "snapshot": {
+          "exit": 0,
+          "events_printed": 28,
+          "lines": 61,
+          "passed": true
+        },
+        "radio_recovery": {
+          "exit": 0,
+          "events_printed": 0,
+          "lines": 17,
+          "passed": true
+        },
+        "radio_postheal": {
+          "exit": 0,
+          "events_printed": 0,
+          "lines": 17,
+          "passed": true
+        },
+        "context": {
+          "exit": 0,
+          "events_printed": 1,
+          "lines": 7,
+          "passed": true
+        },
+        "overflow": {
+          "exit": 0,
+          "events_printed": 24,
+          "lines": 53,
+          "passed": true
+        },
+        "gate": {
+          "exit": 0,
+          "events_printed": 0,
+          "lines": 1,
+          "passed": true
+        },
+        "periodic": {
+          "exit": 0,
+          "events_printed": 0,
+          "lines": 1,
+          "passed": true
+        }
+      },
+      "source_sha256": {
+        "User/LoraTrace.c": "8d1a94859b6691bbe879e61773c6bb3d290249d488f5064b53bff6411b685832",
+        "User/LoraTrace.h": "3a4ebccd86a1a7cb12f0c6528eac13655a06a6292f63027cb0cb56a6461ddc3c",
+        "User/RadioDiag.h": "9e3eb58c4d9e961505ca3d2acd7cf9a2e6faee4ca08107466711301f1e0f8aff",
+        "User/LoraPro.c": "18025819c46c62e2dff7a838fd122c0bc22b0d72c8e48feb8e22aaaabdf72e44"
+      }
+    },
+    "rf-tests": {
+      "heal": {
+        "compile_exit": 0,
+        "test_exit": 0
+      },
+      "diag": {
+        "compile_exit": 0,
+        "test_exit": 0
+      },
+      "actual_Load_Packaging_unchanged": true,
+      "period_preamble_ack_and_user_boot_comment_preserved": true,
+      "hardware_verified": false,
+      "source_sha256": {
+        "User/LoraPro.c": "18025819c46c62e2dff7a838fd122c0bc22b0d72c8e48feb8e22aaaabdf72e44",
+        "User/LoraTrace.c": "8d1a94859b6691bbe879e61773c6bb3d290249d488f5064b53bff6411b685832",
+        "User/LoraTrace.h": "3a4ebccd86a1a7cb12f0c6528eac13655a06a6292f63027cb0cb56a6461ddc3c",
+        "User/RadioDiag.h": "9e3eb58c4d9e961505ca3d2acd7cf9a2e6faee4ca08107466711301f1e0f8aff",
+        "User/Sx126x_Driver.c": "704d666872437f7f6cabde42c9ec4bf3133deb28a8402d39875113cee4a67170",
+        "Core/Src/stm32l0xx_it.c": "88db81192124fe545448795da7886a69b658ad9b992241bcd7641011425f6b57"
+      }
+    }
+  },
+  "source_sha256": {
+    "Core/Inc/usart.h": "ea4e4e1f4c05495848219b6842abf56b0b05ea4d0fc2abfc81050de03dfd9494",
+    "Core/Src/usart.c": "ec2d062575c5d04f4580184b8a627eca54bb0edc53851dbfab4ba94b8b706c51",
+    "Core/Src/main.c": "b5c5d34a8284b25bdacd2fcc09c212531a9343b64881f2ca4cb8c1f0d7e5ef91",
+    "Core/Src/stm32l0xx_it.c": "88db81192124fe545448795da7886a69b658ad9b992241bcd7641011425f6b57",
+    "User/Sleep.c": "372e6866f64d37f77b2dd1333ca14b50fe0be4c40a7b39f58ab50cfbaf1e2060",
+    "User/LoraTrace.c": "8d1a94859b6691bbe879e61773c6bb3d290249d488f5064b53bff6411b685832",
+    "User/LoraTrace.h": "3a4ebccd86a1a7cb12f0c6528eac13655a06a6292f63027cb0cb56a6461ddc3c",
+    "MDK-ARM/MX_02.uvprojx": "6db8eed37fb8aafc9b5ec0d3d63bf25e18e56d0c7affea209001de30329b8b2c",
+    "MDK-ARM/uart_fault_noinit.sct": "3ecc6e6e35853ac3f7f04977936954072a390d2eb13e3b3e0f192e16f4e823ec"
+  },
+  "unchanged_logic_sources": {
+    "User/LoraPro.c": "18025819c46c62e2dff7a838fd122c0bc22b0d72c8e48feb8e22aaaabdf72e44",
+    "User/Sx126x_Driver.c": "704d666872437f7f6cabde42c9ec4bf3133deb28a8402d39875113cee4a67170",
+    "User/RadioDiag.h": "9e3eb58c4d9e961505ca3d2acd7cf9a2e6faee4ca08107466711301f1e0f8aff",
+    "Drivers/STM32L0xx_HAL_Driver/Src/stm32l0xx_hal_uart.c": "554cb3016e65110a74e957ccfcc80f1ae770a4a19a20da26cbb07e84c71e2af7"
+  },
+  "flashed": false,
+  "hardware_verified": false
+}

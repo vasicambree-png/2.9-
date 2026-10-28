@@ -9,6 +9,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "RadioDiag.h"
 #include "usart.h"
 #include "stm32l0xx_it.h"
 #include "soft_timer.h"
@@ -50,6 +51,7 @@ void HardFault_Handler(void)
 {
   g_hardfault_count++;
   g_hardfault_sp = __get_MSP();
+  UART1_DiagHardFault();
 
   while (1)
   {
@@ -93,6 +95,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 	 switch(GPIO_Pin)
 	 {
 		 case GPIO_PIN_4: //DIO1
+                g_radio_diag_irq.dio1++;
+                if (Lora_Rx_state == 3U) { g_radio_diag_irq.rx_irq++; }
 				 switch(Lora_Rx_state)
 				 {
 					 case 1:
@@ -105,6 +109,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 			   __HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_4);
 			 break;
 		 case GPIO_PIN_5://DIO2
+                g_radio_diag_irq.dio2++;
+                if (Lora_Rx_state == 5U || Lora_Rx_state == 7U) { g_radio_diag_irq.cad_activity++; }
 			 {
 					/* ★★★ V1_0_11：DIO2 只在 CAD 期间才有意义，不能无条件改写状态
 					 * ------------------------------------------------------------------
@@ -128,6 +134,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 			 }
 			 break;
 		 case GPIO_PIN_0: //DIO3
+                g_radio_diag_irq.dio3++;
+                if (Lora_Rx_state == 5U || Lora_Rx_state == 6U) { g_radio_diag_irq.cad_done++; }
 			 	switch(Lora_Rx_state)
 				{
 					case 3:
@@ -214,7 +222,7 @@ void DMA1_Channel4_5_6_7_IRQHandler(void)
 
 void USART1_IRQHandler(void)
 {
-  HAL_UART_IRQHandler(&huart1);
+  UART1_IRQHandlerSafe();
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)

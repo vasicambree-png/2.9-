@@ -1,0 +1,16 @@
+; UART checkpoint survives IWDG/software reset; power-reset RAM is invalid.
+; STM32L051: 64KB flash, 8KB SRAM. Stack/heap sizes stay in startup.
+LR_IROM1 0x08000000 0x00010000 {
+  ER_IROM1 0x08000000 0x00010000 {
+    *.o (RESET, +First)
+    *(InRoot$$Sections)
+    .ANY (+RO)
+    .ANY (+XO)
+  }
+  UART_NOINIT 0x20001FC0 UNINIT 0x00000040 {
+    usart.o (UART_NOINIT)
+  }
+  RW_IRAM1 0x20000000 0x00001FC0 {
+    .ANY (+RW +ZI)
+  }
+}

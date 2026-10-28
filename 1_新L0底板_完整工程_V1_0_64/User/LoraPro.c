@@ -1,4 +1,5 @@
 #include "LoraPro.h"
+#include "LoraTrace.h"
 #include "ui.h"
 #include "string.h"
 #include "usart.h"
@@ -89,7 +90,7 @@ Time_c rx_lora={0};
 extern volatile uint8_t  g_stop_woke_early;  /* Sleep.c£ºÉÏÒ»¾õÊÇ·ñÃ»Ë¯Âú 100ms ½ÚÅÄ */
 extern volatile uint32_t g_stop_early_cnt;   /* Sleep.c£ºÀÛ¼Æ"ÔçÐÑ"´ÎÊý£¨Õï¶Ï£©     */
 volatile uint32_t g_radio_settle_cnt = 0;    /* ±¾ÎÄ¼þ£ºÊµ¼Ê²¹µÈµÄ´ÎÊý£¨Õï¶Ï£©      */
-#define Time_RX_lora 500 /* ms: relay preamble 384ms + header/payload fits this
+#define Time_RX_lora 500 /* ms: relay preamble 128ms + header/payload fits this
                             existing receive budget at SF5/BW500. Real RF delivery
                             remains a hardware check; retain the current limit. */
 volatile uint8_t wait_rx_lora_flag=0;
@@ -115,8 +116,8 @@ extern volatile uint8_t sleep_mode;
 
 /* V1_0_57£º·¢Éä²ÎÊýÓë"È·ÈÏ´°¿Ú"¼¯ÖÐ¶¨Òå£¨Ô­À´ 4 ´¦Ó²±àÂë£¬ÓïÒå¸÷Ëµ¸÷»°£© */
 #define LORA_PREAMBLE_STATION      12U    /* Ä¿±ê=·ÖÕ¾(122)£º·ÖÕ¾³£Ìý£¬¶ÌÇ°µ¼¼´¿É        */
-#define LORA_PREAMBLE_NEIGHBOR   6000U    /* Relay coverage trial: SF5/BW500, 384ms preamble.
-                                             More margin for sleeping-neighbor CAD gaps.
+#define LORA_PREAMBLE_NEIGHBOR   2000U    /* Original neighbor setting: SF5/BW500, 128ms preamble.
+                                             Long-preamble trial reverted; retain the original value.
                                              Station transmissions still use 12 symbols. */
 #define LORA_TX_CONFIRM_TICKS       8U    /* Unchanged: 800ms, starting AFTER local TX
                                              completes and RX opens. Relay queuing
@@ -156,13 +157,19 @@ static uint32_t s_tx_state_hms      = 0U;   /* ·¢Éä×´Ì¬¿´ÃÅ¹·µÄ HAL_GetTick »ùÏß
 static uint32_t s_rx_state_hms      = 0U;   /* ÉäÆµ×´Ì¬¿´ÃÅ¹·µÄ HAL_GetTick »ùÏß         */
 static uint32_t s_early_cnt_seen    = 0U;   /* ÒÑ´¦Àí¹ýµÄ"STOP ÔçÐÑ"´ÎÊý£¨Ò»´ÎÐÔËø´æ£©    */
 volatile uint32_t g_radio_norm_cnt  = 0U;   /* Õï¶Ï£ºÒÑ¹Û²ìµ½ÐÂµÄÔçÐÑ¼ÆÊýµÄ´ÎÊý            */
-/* ×ÔÓú£ºÁ¬Ðø LORA_HEAL_FAIL_ROUNDS ÂÖÈ«Ê§°Ü£¬»ò LORA_HEAL_NO_RX_TICKS ÅÄ
-   £¨Rt_tick=100ms£©Ã»ÊÕµ½ÓÐÐ§Êý¾Ý -> »Ø¹éÄ¬ÈÏÈýµØÖ·±í£¬±ÜÃâ±»¶¯Ì¬µØÖ·´øËÀ¡£ */
+/* Recovery watches actual business attempts; failed traffic never refreshes
+ * valid completion time. Recovery is RF-only and retains learned next hops. */
 extern void GetNewsend_addr(void);
 static uint8_t  s_all_fail_cnt  = 0U;
 static uint32_t s_last_valid_ms = 0U;
 #define LORA_HEAL_FAIL_ROUNDS   10U
 #define LORA_HEAL_NO_RX_TICKS   6000U   /* 6000 ÅÄ = 10 ·ÖÖÓ£»Òª 20 ·ÖÖÓ¸Ä³É 12000U */
+#define LORA_HEAL_MIN_GAP_TICKS 600U /* Rate-limit RF-only recovery to >=60s. */
+static uint32_t s_heal_watch_tick, s_heal_last_action;
+static uint32_t s_heal_failed_total, s_heal_failed_mark;
+static uint8_t s_heal_watch_active, s_heal_action_seen, s_heal_reason;
+static uint8_t s_rf_confirm_captured;
+
 
 /* ÏÖ³¡Õï¶Ï£ºÃ¿ LORA_DIAG_MS Êä³öÒ»ÐÐ»úÆ÷¿É½âÎö×´Ì¬£¨[BOOT]/[DIAG]/[UP]/[SELFHEAL]£©¡£
    ÖðÖ¡ÈÕÖ¾ÓÃ LORA_FRAME_LOG ´ò¿ª£¨Ã¿Ìõ×èÈûÔ¼ 26ms£¬»á¸Ä±äÊ±Ðò£©¡£ */
@@ -194,8 +201,116 @@ static uint32_t s_report_tx_tick = 0U;
 static uint8_t s_report_tx_host = 0U;
 static uint8_t s_report_tx_partition = 0U;
 
+extern volatile uint32_t g_cad_cnt, g_rx_hit_cnt;
+static uint16_t link_trace_ticks(uint32_t ticks)
+{
+    return (ticks > 65535U) ? 65535U : (uint16_t)ticks;
+}
+static void link_trace_context(LoraTraceContext *ctx)
+{
+    ctx->rt = Rt_tick; ctx->cad = g_cad_cnt; ctx->hit = g_rx_hit_cnt;
+    ctx->part = Setup.partition; ctx->host = Setup.Host_number;
+    ctx->tx = (uint8_t)Lora_Tx_state; ctx->rx = Lora_Rx_state;
+    ctx->forward = Lo_data.Forward_flag;
+    ctx->attempt = (uint8_t)(send_adrr_cnt * 3U + s_same_addr_retry + 1U);
+    ctx->pending = s_report_pending;
+}
+static void link_trace(uint8_t event, uint32_t seq, const uint8_t *frame,
+                       uint16_t len, uint16_t detail)
+{
+    LoraTraceContext ctx;
+    link_trace_context(&ctx);
+    LoraTrace_Record(&ctx, event, seq, frame, len, detail);
+}
+static void link_trace_service(void)
+{
+    LoraTraceContext ctx;
+    uint8_t safe;
+    link_trace_context(&ctx);
+    /* Print only during an existing awake collection/display window. Never
+     * print queued events during TX, ACK wait, pending forwarding or idle STOP.
+     * Capture is immediate; output may be delayed until the next read window. */
+    safe = ((g_slp_keep_awake != 0U || UI.lcd_open != 0U) &&
+            Lora_Tx_state == Tx_None && Lora_Rx_state == 0U &&
+            Lo_data.Forward_flag == 0U) ? 1U : 0U;
+    LoraTrace_Service(&ctx, safe);
+}
+
+static void link_radio(uint8_t reason, uint32_t seq)
+{
+    RadioDiagSnapshot snapshot;
+    LoraTraceContext ctx;
+    SX126xCaptureDiagnostic(&snapshot);
+    link_trace_context(&ctx);
+    LoraTrace_Radio(&ctx, reason, seq, &snapshot);
+}
+
+/* The watch starts on real business TX, not on a quiet idle device. Only a
+ * completion recognized by the existing protocol updates last_valid_ms.
+ * A recovery restarts its own observation window, never fabricates valid RX. */
+static void lora_heal_activity(void)
+{
+    if (s_heal_watch_active == 0U) {
+        s_heal_watch_active = 1U; s_heal_watch_tick = Rt_tick;
+    }
+}
+static void lora_heal_valid(void)
+{
+    Lo_data.Failure = 0U; s_all_fail_cnt = 0U;
+    s_last_valid_ms = Rt_tick;
+    s_heal_watch_active = 0U; s_heal_reason = 0U;
+    s_heal_failed_mark = s_heal_failed_total;
+}
+static void lora_heal_failed_round(void)
+{
+    if (s_all_fail_cnt < 255U) { s_all_fail_cnt++; }
+    s_heal_failed_total++;
+}
+static void lora_heal_service(void)
+{
+    tSX126xError result;
+    uint8_t reason;
+    if (s_heal_watch_active == 0U) { return; }
+    if ((s_all_fail_cnt >= LORA_HEAL_FAIL_ROUNDS) &&
+        ((uint32_t)(s_heal_failed_total - s_heal_failed_mark) >= LORA_HEAL_FAIL_ROUNDS)) {
+        s_heal_reason |= 1U;
+    }
+    if ((uint32_t)(Rt_tick - s_heal_watch_tick) >= LORA_HEAL_NO_RX_TICKS) {
+        s_heal_reason |= 2U;
+    }
+    if (s_heal_reason == 0U) { return; }
+    /* Never discard an in-flight ACK, received packet, queued forwarding,
+     * CH584 collection or network test merely to perform maintenance. */
+    if (Lora_Tx_state != Tx_None || Lora_Rx_state != 0U ||
+        Lo_data.Forward_flag != 0U || g_slp_keep_awake != 0U ||
+        UI.Setting_flag != 0U || Setup.On_Off_flag == 0U ||
+        Setup.Host_number == 0U || s_force_rf_exit != 0U ||
+        (RfNet.Status != RFNET_IDLE && RfNet.Status != RFNET_DONE)) { return; }
+    if (s_heal_action_seen != 0U &&
+        (uint32_t)(Rt_tick - s_heal_last_action) < LORA_HEAL_MIN_GAP_TICKS) { return; }
+    reason = s_heal_reason;
+    link_radio(RF_HEAL_BEFORE, s_report_seq);
+    link_trace(LT_HEAL_BEGIN, s_report_seq, NULL, 0U, reason);
+    s_heal_action_seen = 1U; s_heal_last_action = Rt_tick;
+    result = SX126x_Lora_init(); /* RF only: no ALL_init, UART, EEPROM or routes. */
+    link_radio(RF_HEAL_AFTER, s_report_seq);
+    link_trace(LT_HEAL_END, s_report_seq, NULL, 0U, (uint16_t)result);
+    SX126X_WOR_Execute(Sx1268_Sleep);
+    Lora_Rx_state = 0U;
+    s_rx_state_last = 0U; s_rx_state_tick = Rt_tick;
+    s_rx_state_hms = HAL_GetTick();
+    s_heal_reason = 0U;
+    s_heal_watch_tick = Rt_tick;
+    s_heal_failed_mark = s_heal_failed_total;
+    /* Keep failure totals, last_valid_ms, dynamic routes, pending payload,
+     * original 30s retry deadline and the 60s collection schedule unchanged. */
+}
+
 void Lora_CancelCollectedReport(void)
 {
+    link_trace(LT_CANCEL, s_report_seq, NULL, 0U, s_report_pending);
+    s_heal_watch_active = 0U; s_heal_reason = 0U;
+    s_all_fail_cnt = 0U; s_heal_failed_mark = s_heal_failed_total;
     s_report_pending = 0U;
     s_report_tx_seq = 0U;
     s_self_retry_wait = 0U;
@@ -206,6 +321,10 @@ void Lora_QueueCollectedReport(const uint8_t *channels)
     uint8_t i;
     uint16_t at;
     if (channels == NULL) { return; }
+    if (s_report_pending != 0U) {
+        link_trace(LT_REPLACE, s_report_seq, s_report_data, 80U,
+                   link_trace_ticks(Rt_tick - s_report_tick));
+    }
     for (i = 0U; i < 20U; i++)
     {
         at = (uint16_t)i * 4U;
@@ -220,6 +339,7 @@ void Lora_QueueCollectedReport(const uint8_t *channels)
     s_report_partition = Setup.partition;
     s_report_tick = Rt_tick;
     s_report_pending = 1U;
+    link_trace(LT_READY, s_report_seq, s_report_data, 80U, 0U);
     printf("[UP] READY seq=%lu tick=%lu\r\n",
            (unsigned long)s_report_seq, (unsigned long)Rt_tick);
 }
@@ -599,12 +719,7 @@ void Lora_send(void)
 				}
 				{
 		   
-					if(Lo_data.Failure>9)
-					{
-						Lo_data.Failure=0; 
-						s_all_fail_cnt = 0U; 
-						s_last_valid_ms = Rt_tick;
-					}
+					/* Failed TX must not reset healing counters or pretend to be valid RX. */
 					memset(Lo_data.Tx_buf,0,100);
 					send_next_lora();
 					
@@ -623,14 +738,20 @@ void Lora_send(void)
 						if(rx_state==0)
 						{
 				
-					    for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* V1_0_57: Ç°µ¼Í³Ò»ÓÉ LORA_PREAMBLE_NEIGHBOR ¸ø£¨6000 ·ûºÅ/384ms£© */
+					    for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* V1_0_57: Ç°µ¼Í³Ò»ÓÉ LORA_PREAMBLE_NEIGHBOR ¸ø£¨2000 ·ûºÅ/128ms£© */
 						}
 						else{
-						  for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* Í¬ÉÏ£º6000 ·ûºÅ/384ms */
+						  for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* Í¬ÉÏ£º2000 ·ûºÅ/128ms */
 						}
 					}
         // printf("self send addr == %d;for_send_num ==%d\r\n",Setup.transmit_number[send_adrr_cnt],for_send_num);
-					LSD_RF_SendPacket(Lo_data.Tx_buf,Lo_data.Tx_data_len,for_send_num);                          //·¢ËÍÊý¾Ý
+					s_rf_confirm_captured = 0U;
+                    lora_heal_activity();
+                    if (send_adrr_cnt == 0U && s_same_addr_retry == 0U) { link_radio(RF_PRE_TX, s_report_tx_seq); }
+                    link_trace(LT_SELF_TX, s_report_tx_seq, Lo_data.Tx_buf, Lo_data.Tx_data_len, for_send_num);
+                    LSD_RF_SendPacket(Lo_data.Tx_buf,Lo_data.Tx_data_len,for_send_num);
+                    link_trace(LT_TX_EXIT, s_report_tx_seq, Lo_data.Tx_buf, Lo_data.Tx_data_len, SX126xGetIrqStatus());
+                    if (send_adrr_cnt == 0U && s_same_addr_retry == 0U) { link_radio(RF_TX_EXIT, s_report_tx_seq); }                          //·¢ËÍÊý¾Ý
 //					HAL_IWDG_Refresh(&hiwdg) ;
 					re_iwdg();
 
@@ -638,6 +759,7 @@ void Lora_send(void)
 					SX126X_WOR_Exit();  //½øÈë¶Á¼à²â;
 
 					Lora_Tx_state=Tx_wait_oneself;
+                    if (send_adrr_cnt == 0U && s_same_addr_retry == 0U) { link_radio(RF_RX_OPEN, s_report_tx_seq); }
 					Lo_data.RfRxTick=Rt_tick;
 					s_tx_wait_tick=Rt_tick;   /* V1_0_57: dedicated wait start tick */
 				}
@@ -650,7 +772,9 @@ void Lora_send(void)
 				if(TickDiff_100ms(s_tx_wait_tick)>LORA_TX_CONFIRM_TICKS) /* V1_0_57: 5 ticks -> 8 ticks(800ms), and use a DEDICATED start point: the old one was Lo_data.RfRxTick, which is refreshed by the RX window (SX126X_WOR_Exit) and by 0x0A/0x0C receptions -> the timeout could never elapse ("wait for ack forever") */
 				{
 //					printf("Tx_wait_oneself\r\n");
-					Lo_data.Failure++;
+					if (send_adrr_cnt == 0U && s_same_addr_retry == 0U && s_rf_confirm_captured == 0U) { link_radio(RF_CONFIRM_TIMEOUT, s_report_tx_seq); s_rf_confirm_captured = 1U; }
+                    link_trace(LT_SELF_TIMEOUT, s_report_tx_seq, Lo_data.Tx_buf, Lo_data.Tx_data_len, link_trace_ticks(TickDiff_100ms(s_tx_wait_tick)));
+                    if (Lo_data.Failure < 255U) { Lo_data.Failure++; }
 					
 					TickLeav  = 2U + (((Rt_tick >> 1) + (uint32_t)Setup.Host_number * 7U) % 4U);   /* V1_0_24 P4: 4 slots (200..500ms), paired with the 4s stagger slot */
 					Leav_tick = Rt_tick;   /* V1_0_24 P4: backoff gate needs a start point */
@@ -676,19 +800,9 @@ void Lora_send(void)
 						Lo_data.RfTick = Rt_tick;   /* ±¾ÂÖ½áÊø£¬¸üÐÂÁÁÆÁÖÜÆÚ»ù×¼£»Ï¢ÆÁ´ýÉÏ´«ÈÎÎñ¶ÀÁ¢¹ÜÀí¡£ */
 						LORA_FRAME_PRINT("all fail send\r\n");
 				  	g_diag_allfail++; 
-						printf("[UP] FAIL allfail=%lu slot=%d/%d/%d fail=%d t=%lums\r\n",(unsigned long)g_diag_allfail,(int)Setup.transmit_number[0],(int)Setup.transmit_number[1],(int)Setup.transmit_number[2],(int)Lo_data.Failure,(unsigned long)Rt_tick);
-					/* ×ÔÓú¢Ù£ºÁ¬Ðø LORA_HEAL_FAIL_ROUNDS ÂÖÈýµØÖ·È«Ê§°Ü -> »Ø¹éÄ¬ÈÏÈýµØÖ· */
-					if (s_all_fail_cnt < 250U) 
-            { s_all_fail_cnt++; }
-					if (s_all_fail_cnt >= LORA_HEAL_FAIL_ROUNDS)
-					{
-						s_all_fail_cnt = 0U;
-						Lo_data.Failure = 0;
-						GetNewsend_addr();
-						send_adrr_cnt = 0U;
-						s_same_addr_retry = 0U;
-						LORA_FRAME_PRINT("[SELFHEAL] fail rounds -> restore default next hops\r\n");
-					}
+						printf("[UP] FAIL allfail=%lu slot=%d/%d/%d fail=%d rt=%lu unit=100ms\r\n",(unsigned long)g_diag_allfail,(int)Setup.transmit_number[0],(int)Setup.transmit_number[1],(int)Setup.transmit_number[2],(int)Lo_data.Failure,(unsigned long)Rt_tick);
+                    lora_heal_failed_round();
+
 					}
 					else
 					{
@@ -749,22 +863,30 @@ void Lora_send(void)
 								if(rx_state==0)
 								{
 				
-					            for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* V1_0_57: Ç°µ¼Í³Ò»ÓÉ LORA_PREAMBLE_NEIGHBOR ¸ø£¨6000 ·ûºÅ/384ms£© */
+					            for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* V1_0_57: Ç°µ¼Í³Ò»ÓÉ LORA_PREAMBLE_NEIGHBOR ¸ø£¨2000 ·ûºÅ/128ms£© */
 								}
 								else{
-									for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* Í¬ÉÏ£º6000 ·ûºÅ/384ms */
+									for_send_num=LORA_PREAMBLE_NEIGHBOR;   /* Í¬ÉÏ£º2000 ·ûºÅ/128ms */
 								}
 
 						}
            // printf("Tx_Forwarding\r\n");
 						   //printf("self send addr == %d;for_send_num ==%d\r\n",Setup.transmit_number[send_adrr_cnt],for_send_num);
-					  LSD_RF_SendPacket(Lo_data.Tx_buf,Lo_data.Tx_data_len,for_send_num); 
+					  s_rf_confirm_captured = 0U;
+                    lora_heal_activity();
+                    if (send_adrr_cnt == 0U && s_same_addr_retry == 0U) { link_radio(RF_PRE_TX, 0U); }
+                    link_trace(LT_FORWARD_TX, 0U, Lo_data.Tx_buf, Lo_data.Tx_data_len,
+                               link_trace_ticks(Rt_tick - s_forward_ready_tick + 2U));
+                    LSD_RF_SendPacket(Lo_data.Tx_buf,Lo_data.Tx_data_len,for_send_num);
+                    link_trace(LT_TX_EXIT, 0U, Lo_data.Tx_buf, Lo_data.Tx_data_len, SX126xGetIrqStatus());
+                    if (send_adrr_cnt == 0U && s_same_addr_retry == 0U) { link_radio(RF_TX_EXIT, 0U); } 
 
 						re_iwdg();
 	
 					  SX126X_WOR_Exit();  //½øÈë¶Á¼à²â;
 
 					  Lora_Tx_state=Tx_wait_Forwarding;
+                    if (send_adrr_cnt == 0U && s_same_addr_retry == 0U) { link_radio(RF_RX_OPEN, 0U); }
 					  Lo_data.RfRxTick=Rt_tick;
 					  s_tx_wait_tick=Rt_tick;   /* V1_0_57: same as above */
 			  }
@@ -773,7 +895,9 @@ void Lora_send(void)
 
 				if(TickDiff_100ms(s_tx_wait_tick)>LORA_TX_CONFIRM_TICKS) /* V1_0_57: 5 ticks -> 8 ticks(800ms), and use a DEDICATED start point: the old one was Lo_data.RfRxTick, which is refreshed by the RX window (SX126X_WOR_Exit) and by 0x0A/0x0C receptions -> the timeout could never elapse ("wait for ack forever") */
 				{
-					Lo_data.Failure++;
+					if (send_adrr_cnt == 0U && s_same_addr_retry == 0U && s_rf_confirm_captured == 0U) { link_radio(RF_CONFIRM_TIMEOUT, 0U); s_rf_confirm_captured = 1U; }
+                    link_trace(LT_FORWARD_TIMEOUT, 0U, Lo_data.Tx_buf, Lo_data.Tx_data_len, link_trace_ticks(TickDiff_100ms(s_tx_wait_tick)));
+                    if (Lo_data.Failure < 255U) { Lo_data.Failure++; }
 					if (s_same_addr_retry < 2U)   /* V1_0_24 P5: symmetric with Tx_wait_oneself */
 					{
 					    s_same_addr_retry++;
@@ -788,8 +912,10 @@ void Lora_send(void)
 					if(send_adrr_cnt>2)
 					{
 					  Lora_Tx_state=0;
-						Lo_data.Forward_flag=0;
-						send_adrr_cnt=0; s_same_addr_retry = 0U;
+						link_trace(LT_FORWARD_FAIL, 0U, Lo_data.Tx_buf, Lo_data.Tx_data_len, 0U);
+                        lora_heal_failed_round();
+                        Lo_data.Forward_flag=0;
+                        send_adrr_cnt=0; s_same_addr_retry = 0U;
 					}
 					else
 					{
@@ -843,6 +969,7 @@ void Lora_reve(void)
 		        ((TickDiff_100ms(s_rx_state_tick) > LORA_RX_STUCK_TICKS) ||
 		         ((uint32_t)(HAL_GetTick() - s_rx_state_hms) > LORA_STUCK_MS_AWAKE)))
 		{
+            link_trace(LT_WATCHDOG, s_report_tx_seq, NULL, 0U, (uint16_t)(0x100U | Lora_Rx_state));
 			g_lora_rx_stuck_cnt++;
 			printf("[LORA] rx state %u stuck > %lus -> force re-arm\r\n",
 			       (unsigned)Lora_Rx_state,
@@ -891,6 +1018,11 @@ void Lora_reve(void)
 					{
 						if(TickDiff_100ms(Lo_data.RfRxTick) > lora_rx_window_ticks()) /* V1_0_57: idle 4 ticks(400ms), post-TX ack wait 8 ticks(800ms) - see lora_rx_window_ticks() */
 						{
+if ((Lora_Tx_state == Tx_wait_oneself || Lora_Tx_state == Tx_wait_Forwarding) &&
+                                send_adrr_cnt == 0U && s_same_addr_retry == 0U && s_rf_confirm_captured == 0U) {
+                                link_radio(RF_CONFIRM_TIMEOUT, s_report_tx_seq);
+                                s_rf_confirm_captured = 1U;
+                            }
 //				       printf("3213213\r\n");
 							 SX126X_WOR_Execute(Sx1268_Sleep);
                //re_iwdg();
@@ -959,7 +1091,7 @@ volatile uint32_t g_cad_cnt = 0;      /* ¡ï¡ï¡ï V1_0_12£ºCAD ÀÛ¼Æ´ÎÊý£¨´¿Õï¶ÏÁ¿£
 /* V1_0_27: auto gear switching by traffic countdown (see Timer_task). */
 #define CAD_FAST_TICKS     1U      /* fast gear: 100ms (TickDiff unit = 100ms) */
 #define CAD_SLOW_TICKS     1U      /* Keep the nominal CAD check interval at 100ms.
-                                     Business-neighbor preamble is now 384ms;
+                                     Business-neighbor preamble is 128ms;
                                      actual scan gaps remain a field measurement. */
 #define CAD_HOLD_CYCLES    300U    /* hold FAST for 300 cycles after a packet (~30-60s) */
 static uint32_t s_cad_fast_hold = 0U;
@@ -971,6 +1103,7 @@ volatile uint32_t g_cad_slow_cnt = 0U;
    Ô¼Êø£ºSTOP ³öÀ´µÄµÚÒ»¼þÊÂ¿ÉÄÜÊÇ"¸ÄÉäÆµÄ£Ê½"£¬±ØÐëÈ·ÈÏÇÐ»»ÒÑ×ßÍê¡£ */
 void CAD_work(void)
 {
+    g_rx_hit_cnt_recent = 0U;
     lora_force_rf_exit_once();        /* V1_0_57£ºÈô»ØÖ÷Ò³Ê±ÉäÆµÕýÃ¦£¨s_force_rf_exit=1£©£¬ÔÚÕâÀï²¹×öÒ»´ÎÓÐ½çÍË³ö */
     lora_early_wake_normalize();      /* Observe early wake without disturbing RF/ACK state. */
     g_cad_cnt++;                      /* Õï¶Ï¼ÆÊý£¬²»²ÎÓëÈÎºÎÅÐ¾Ý */
@@ -1010,7 +1143,9 @@ void CAD_work(void)
 //				  SystemClock_Config();
           SystemClock_Config();
 		      SystemPower_Config();
-					SX126X_WOR_Exit(); //³¤½ÓÊÕÄ£Ê½
+					g_rx_hit_cnt++; g_rx_hit_cnt_recent = 1U;
+                    s_cad_fast_hold = CAD_HOLD_CYCLES;
+                    SX126X_WOR_Exit(); //³¤½ÓÊÕÄ£Ê½
 
 					wait_rx_lora_flag=0;
           rx_lora.Start=HAL_GetTick();
@@ -1045,6 +1180,7 @@ void CAD_work(void)
 					}
 					else  //Ã»ÓÐ½ÓÊÕµ½Êý¾Ý£¬±»Îó»½ÐÑ
 					{
+                        link_trace(LT_CAD_RX_END, 0U, NULL, 0U, SX126xGetIrqStatus());
 					   	  Lora_Rx_state=0;
 //							printf("Lora_Rx_state == %d\r\n",Lora_Rx_state);
 			         // printf("X222\r\n");
@@ -1061,7 +1197,7 @@ void CAD_work(void)
 		   ÔÙË¯Ò»´Î»á°Ñ CAD ÖÜÆÚ¶¥µ½ ~200ms ÒÔÉÏ£¬Ç°µ¼¾Í¸Ç²»×¡½ÓÊÕ·½µÄ CAD ²ÉÑù¡£ */
 		/* Õï¶ÏÁ¿£ºÀÛ¼Æ±¾´Î CAD Â·¾¶µÄ"ÐÑ×Å"Ê±¼ä£¨HAL_GetTick ÔÚ STOP ÏÂ²»×ß£©¡£ */
 		g_cad_awake_ms += (uint32_t)(HAL_GetTick() - h0);
-		if (Lora_Rx_state == 6 || Lora_Rx_state == 4) { g_rx_hit_cnt++; g_rx_hit_cnt_recent = 1U; s_cad_fast_hold = CAD_HOLD_CYCLES; } else { g_rx_hit_cnt_recent = 0U; }  /* V1_0_27 */
+		/* CAD detections are counted before RX consumes/clears the state. */  /* V1_0_27 */
 		if (g_rx_hit_cnt_recent != 0U) { g_rx_ms += (uint32_t)(HAL_GetTick() - h0); }   /* V1_0_23: idle-RX ms */
 }
 
@@ -1119,7 +1255,7 @@ static uint8_t sched_in_window(void)
 /* 100ms ½ÚÅÄÈÎÎñ£ºÕï¶ÏÊä³ö + ×ÔÓú + °´¿ì/Âýµµ¾ö¶¨ÕâÒ»ÅÄ×ö CAD »¹ÊÇ work_sleep¡£ */
 void Timer_task(void)
 {
-	/* ×ÔÓú¢Ú£º³¤Ê±¼ä£¨LORA_HEAL_NO_RX_TICKS ÅÄ£©Ã»ÊÕµ½ÓÐÐ§Êý¾Ý -> »Ø¹éÄ¬ÈÏÈýµØÖ· */
+	/* RF healing runs in the common Lora_task service, including rx_state=1. */
 	/* V1_0_26 ÏÖ³¡Õï¶Ï£ºÃ¿ LORA_DIAG_MS Êä³öÒ»ÐÐ»úÆ÷¿É½âÎö×´Ì¬ */
 	{
 		static uint32_t s_t_diag = 0U;
@@ -1127,7 +1263,7 @@ void Timer_task(void)
 		else if ((uint32_t)(Rt_tick - s_t_diag) >= (LORA_DIAG_MS / 100U))
 		{
 			s_t_diag = Rt_tick;
-			printf("[DIAG] t=%lums part=%d host=%d slot=%d/%d/%d onoff=%d fail=%d heard=%d allfail=%lu diagms=%d rx=%u txst=%u reset=%d rxstuck=%lu\r\n",
+			printf("[DIAG] rt=%lu unit=100ms part=%d host=%d slot=%d/%d/%d onoff=%d fail=%d heard=%d allfail=%lu diagms=%d rx=%u txst=%u reset=%d rxstuck=%lu\r\n",
 				(unsigned long)Rt_tick, (int)Setup.partition, (int)Setup.Host_number,
 				(int)Setup.transmit_number[0], (int)Setup.transmit_number[1], (int)Setup.transmit_number[2],
 				(int)Setup.On_Off_flag, (int)Lo_data.Failure,
@@ -1135,18 +1271,9 @@ void Timer_task(void)
 				(unsigned long)g_diag_allfail, (int)LORA_DIAG_MS,
 				(unsigned)Lora_Rx_state, (unsigned)Lora_Tx_state,
 				(int)reset_flag, (unsigned long)g_lora_rx_stuck_cnt);
-			if (s_all_fail_cnt > 0U) { printf("[DIAG] consecutive_allfail=%d (heal at %d)\r\n", (int)s_all_fail_cnt, (int)LORA_HEAL_FAIL_ROUNDS); }
+			if (s_all_fail_cnt > 0U) { printf("[DIAG] consecutive_allfail=%d heal_at=%d last_valid_rt=%lu watch_rt=%lu\r\n", (int)s_all_fail_cnt, (int)LORA_HEAL_FAIL_ROUNDS, (unsigned long)s_last_valid_ms, (unsigned long)s_heal_watch_tick); }
 		}
-	}	if (s_last_valid_ms == 0U) { s_last_valid_ms = Rt_tick; }
-	else if ((uint32_t)(Rt_tick - s_last_valid_ms) > LORA_HEAL_NO_RX_TICKS)
-	{
-		s_last_valid_ms   = Rt_tick;
-		s_all_fail_cnt    = 0U;
-		GetNewsend_addr();
-		send_adrr_cnt     = 0U;
-		s_same_addr_retry = 0U;
-		LORA_FRAME_PRINT("[SELFHEAL] no valid rx for 10min -> restore default next hops\r\n");
-	}   
+	}
         uint32_t th = CAD_SLOW_TICKS;
         if (s_cad_fast_hold != 0U) { s_cad_fast_hold--; th = CAD_FAST_TICKS; g_cad_fast_cnt++; }
         else                       { g_cad_slow_cnt++; }
@@ -1224,7 +1351,7 @@ static void boot_upload_check(void)
 /* ==========================================================================
  * V1_0_57: recover a TX state that remains unchanged for over 12 seconds.
  * This is a per-state guard; a full multi-address retry round can take longer.
- * Neighbor business frames now use a 384ms preamble; direct-station frames
+ * Neighbor business frames use a 128ms preamble; direct-station frames
  * and the post-TX confirmation window retain their existing settings.
  * ========================================================================== */
 static void Lora_tx_watchdog(void)
@@ -1249,6 +1376,7 @@ static void Lora_tx_watchdog(void)
     if ((TickDiff_100ms(s_tx_state_tick) <= LORA_TX_STUCK_TICKS) &&
         ((uint32_t)(HAL_GetTick() - s_tx_state_hms) <= LORA_STUCK_MS_AWAKE)) { return; }
 
+    link_trace(LT_WATCHDOG, s_report_tx_seq, NULL, 0U, (uint16_t)Lora_Tx_state);
     g_lora_tx_stuck_cnt++;
     printf("[LORA] tx state %u stuck > %lus -> force Tx_None (send_flag=%u cadbusy=%u)\r\n",
            (unsigned)Lora_Tx_state,
@@ -1274,6 +1402,8 @@ static void Lora_tx_watchdog(void)
 
 void Lora_task(void)
 {
+    link_trace_service();
+    lora_heal_service();
 	/* ¡ï¡ï¡ï V1_0_56 ÏÖ³¡ÐÞ¸´£¨Ö÷Á¦·ÀÏß£©£ºÖ»Òª¼ì²âµ½"´ÓÉèÖÃÒ³(Setting_flag!=0)
 	   »Øµ½Ö÷Ò³(Setting_flag==0)"Õâ¸öÌø±ä£¬¾Í°Ñ LoRa ×´Ì¬»úÕû·Ý¹éÎ»Ò»´Î¡£
 	   ÎªÊ²Ã´·ÅÔÚÕâÀï¶ø²»ÊÇ¸÷¸ö°´¼ü·ÖÖ§Àï£º
@@ -1287,7 +1417,7 @@ void Lora_task(void)
 	}
 	s_last_setting_flag = UI.Setting_flag;
 
-	boot_upload_check();   /* ¡ï V1_0_9£º¸´Î»ºóÊý¾ÝÊÕÆë¾Í²¹·¢Ò»´Î£¨Ö»Ò»´Î£© */
+	// boot_upload_check();   /* ¡ï V1_0_9£º¸´Î»ºóÊý¾ÝÊÕÆë¾Í²¹·¢Ò»´Î£¨Ö»Ò»´Î£© */
 
 	Lora_tx_watchdog();   /* V1_0_57£º·¢Éä×´Ì¬¿´ÃÅ¹·£¨12s ¶µµ×£© */
 
@@ -1313,6 +1443,7 @@ uint8_t token_flag=0;
 uint8_t RxData_check(void)
 {  
 	uint8_t Cmd;
+    uint16_t trace_irq = SX126xGetIrqStatus();
   int index=0;
 
   u16 Addr_num=0;
@@ -1321,14 +1452,17 @@ uint8_t RxData_check(void)
   re_iwdg();
 	
 	if(G_LoRaConfig.PayloadLength==0||G_LoRaConfig.PayloadLength>98)
-	{
+    {
+        link_trace(LT_BAD_LEN, 0U, NULL, G_LoRaConfig.PayloadLength, trace_irq);
 
 		 return 0;
 	}
 	if(!CheckCheckSum(Lo_data.Rx_Buf,G_LoRaConfig.PayloadLength))                   //Êý¾ÝÐ£ÑéºÍ²»¶Ô
 	{
-	   return 0;
+        link_trace(LT_BAD_SUM, 0U, Lo_data.Rx_Buf, G_LoRaConfig.PayloadLength, trace_irq);
+        return 0;
   }
+    link_trace(LT_RX, 0U, Lo_data.Rx_Buf, G_LoRaConfig.PayloadLength, trace_irq);
 
 
 //	if( Lo_data.Rx_Buf[0]==3)
@@ -1414,6 +1548,11 @@ uint8_t RxData_check(void)
                             memcpy(Lo_data.ForwardBuf, &Lo_data.Rx_Buf[10], 84U);
                             Lo_data.Forward_flag = 1U;
                             s_forward_ready_tick = Rt_tick + 2U; /* Original 200ms give-way. */
+                            link_trace(LT_FORWARD_QUEUE, 0U, Lo_data.Rx_Buf, G_LoRaConfig.PayloadLength, 2U);
+                        }
+                        else {
+                            link_trace(LT_FORWARD_BUSY, 0U, Lo_data.Rx_Buf, G_LoRaConfig.PayloadLength,
+                                       link_trace_ticks(Rt_tick - s_forward_ready_tick + 2U));
                         }
                         Lora_Rx_state = 3U;
                         Lo_data.RfRxTick = Rt_tick;
@@ -1430,10 +1569,11 @@ uint8_t RxData_check(void)
 				//			  	if(Part==Setup.partition&& Lo_data.Rx_Buf[13]==Setup.Host_number) //Í¬Ò»¸ö·ÖÕ¾µÄÊôÓÚ×Ô¼ºµÄÊý¾Ý
 				//					{
 										//	printf("CD\r\n");
-											Lo_data.Failure=0; s_all_fail_cnt = 0U; s_last_valid_ms = Rt_tick;
+											lora_heal_valid();
 											Lora_Tx_state=0; //
 								      Ble_flag_data=0;
 							      	send_flag=0;
+                        link_trace(LT_SELF_OK_D, s_report_tx_seq, Lo_data.Rx_Buf, G_LoRaConfig.PayloadLength, link_trace_ticks(TickDiff_100ms(s_tx_wait_tick)));
                         lora_self_report_complete();
 											Lo_data.RfTick = Rt_tick;   /* ±¾ÂÖ½áÊø£¬¸üÐÂÁÁÆÁÖÜÆÚ»ù×¼£»Ï¢ÆÁ´ýÉÏ´«ÈÎÎñ¶ÀÁ¢¹ÜÀí¡£ */
 				//					}
@@ -1443,8 +1583,9 @@ uint8_t RxData_check(void)
 				//					if(Lo_data.Rx_Buf[3]==now_host_addr&&Lo_data.Rx_Buf[13] == Tx11)//µÚÈýÎ»µÈÓÚ·¢ËÍ³öÈ¥µÄµØÖ·
 				//					{
 //										 	printf("DDDDFFF\r\n");
-							     	Lo_data.Forward_flag=0;
-										Lo_data.Failure=0; s_all_fail_cnt = 0U; s_last_valid_ms = Rt_tick;
+							     	link_trace(LT_FORWARD_OK_D, 0U, Lo_data.Rx_Buf, G_LoRaConfig.PayloadLength, link_trace_ticks(TickDiff_100ms(s_tx_wait_tick)));
+                        Lo_data.Forward_flag=0;
+										lora_heal_valid();
 										Lora_Tx_state=0;
 				//					}
 					break;
@@ -1503,8 +1644,9 @@ if( Setup.transmit_number[0]>Lo_data.Rx_Buf[3] && Lo_data.Rx_Buf[3]!=0 && Lo_dat
 						}
 						 // printf("AAACCC\r\n");
 						  Ble_flag_data=0;
-							Lo_data.Failure=0; s_all_fail_cnt = 0U; s_last_valid_ms = Rt_tick;
+							lora_heal_valid();
 					  	Lora_Tx_state=0; //
+                        link_trace(LT_SELF_OK_A, s_report_tx_seq, Lo_data.Rx_Buf, G_LoRaConfig.PayloadLength, link_trace_ticks(TickDiff_100ms(s_tx_wait_tick)));
                         lora_self_report_complete();
 							Lo_data.RfTick = Rt_tick;   /* ±¾ÂÖ½áÊø£¬¸üÐÂÁÁÆÁÖÜÆÚ»ù×¼£»Ï¢ÆÁ´ýÉÏ´«ÈÎÎñ¶ÀÁ¢¹ÜÀí¡£ */
 					}
@@ -1519,8 +1661,9 @@ if( Setup.transmit_number[0]>Lo_data.Rx_Buf[3] && Lo_data.Rx_Buf[3]!=0 && Lo_dat
 						{
 						  dis_Rssi[send_adrr_cnt]=G_LoRaPara.Ack_RSSI ;
 						}
-						Lo_data.Forward_flag=0;
-						Lo_data.Failure=0; s_all_fail_cnt = 0U; s_last_valid_ms = Rt_tick;
+						link_trace(LT_FORWARD_OK_A, 0U, Lo_data.Rx_Buf, G_LoRaConfig.PayloadLength, link_trace_ticks(TickDiff_100ms(s_tx_wait_tick)));
+                        Lo_data.Forward_flag=0;
+						lora_heal_valid();
 						Lora_Tx_state=0;
 					}
 					break;
@@ -1563,8 +1706,9 @@ if( Setup.transmit_number[0]>Lo_data.Rx_Buf[3] && Lo_data.Rx_Buf[3]!=0 && Lo_dat
 						}
 						 // printf("AAACCC\r\n");
 						  Ble_flag_data=0;
-							Lo_data.Failure=0; s_all_fail_cnt = 0U; s_last_valid_ms = Rt_tick;
+							lora_heal_valid();
 					  	Lora_Tx_state=0; //
+                        link_trace(LT_SELF_OK_OD, s_report_tx_seq, Lo_data.Rx_Buf, G_LoRaConfig.PayloadLength, link_trace_ticks(TickDiff_100ms(s_tx_wait_tick)));
                         lora_self_report_complete();
 							Lo_data.RfTick = Rt_tick;   /* ±¾ÂÖ½áÊø£¬¸üÐÂÁÁÆÁÖÜÆÚ»ù×¼£»Ï¢ÆÁ´ýÉÏ´«ÈÎÎñ¶ÀÁ¢¹ÜÀí¡£ */
 					}
@@ -1579,8 +1723,9 @@ if( Setup.transmit_number[0]>Lo_data.Rx_Buf[3] && Lo_data.Rx_Buf[3]!=0 && Lo_dat
 						{
 						  dis_Rssi[send_adrr_cnt]=G_LoRaPara.Ack_RSSI ;
 						}
-						Lo_data.Forward_flag=0;
-						Lo_data.Failure=0; s_all_fail_cnt = 0U; s_last_valid_ms = Rt_tick;
+						link_trace(LT_FORWARD_OK_OD, 0U, Lo_data.Rx_Buf, G_LoRaConfig.PayloadLength, link_trace_ticks(TickDiff_100ms(s_tx_wait_tick)));
+                        Lo_data.Forward_flag=0;
+						lora_heal_valid();
 						Lora_Tx_state=0;
 					}
 					break;

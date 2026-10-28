@@ -1,0 +1,2 @@
+# Preserve exported firmware bytes and the published SHA-256 across Git clients.
+*.hex -text

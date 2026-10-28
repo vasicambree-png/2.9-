@@ -11,6 +11,8 @@
   *实现且函数名等都没有改动，那本文件可以不用做更改直接使用，客户在应用层直接调
   *用本文件函数就可以实现各种操作。
 *******************************************************************************/
+#include "RadioDiag.h"
+#include <string.h>
 #include "Sx126x_Driver.h"
 #include "spi.h"
 #include "usart.h"
@@ -96,7 +98,7 @@ void Delay_Us(u16 Times)
 
 u8 SX126X_ReadWriteByte(u8 Data)
 {
-	 uint8_t	RxDat;
+	 uint8_t	RxDat = 0U;
 	 /* ★★ 看门狗审查补丁（V1_0_2 第三轮）：超时从 1000ms 收紧到 SX126X_SPI_TIMEOUT_MS(10ms)。
 	    1 字节在 4MHz SPI 下只要 2us，1000ms 是 50 万倍余量，毫无意义；
 	    更糟的是 HAL_SPI_TransmitReceive 的等待循环里**不喂狗**，而
@@ -104,7 +106,7 @@ u8 SX126X_ReadWriteByte(u8 Data)
 	    （时钟被关、外设异常），就是 9 × 1000ms = **9 秒不喂狗**
 	    （IWDG 只有约 2.08s）-> 必然复位。10ms 仍有 5000 倍余量，
 	    最坏 9 × 10ms = 90ms。 */
-   HAL_SPI_TransmitReceive(&hspi1, &Data, &RxDat, 1, SX126X_SPI_TIMEOUT_MS);  // 同步传输
+   if (HAL_SPI_TransmitReceive(&hspi1, &Data, &RxDat, 1, SX126X_SPI_TIMEOUT_MS) != HAL_OK) { g_radio_spi_fail_count++; }  // 同步传输
    return RxDat;
   //return Spi_WRByte(Data);
 }
@@ -131,6 +133,11 @@ u8 SX126X_ReadWriteByte(u8 Data)
 volatile uint16_t SX126x_BusyTimeoutCnt    = 0;   /* BUSY 等待超时次数（诊断用） */
 volatile uint16_t SX126x_StandbyTimeoutCnt = 0;   /* STDBY 等待超时次数（诊断用） */
 volatile uint16_t Lora_TxWaitTimeoutCnt    = 0;   /* TX 等 DIO1 超时次数（诊断用） */
+
+/* CAD configuration is valid only until the next RF hardware reset. */
+static uint8_t s_cad_cfg_done = 0U;
+volatile RadioDiagIrqCounters g_radio_diag_irq = {0};
+volatile uint32_t g_radio_spi_fail_count = 0U;
 
 void SX126xWaitOnBusy( void )
 {
@@ -377,6 +384,7 @@ void SX126xReadFifo( uint8_t *buffer, uint8_t size )
   */
 void SX126X_Reset(void)
 {
+    s_cad_cfg_done = 0U; /* Reapply the original CAD parameters after RF reset. */
     Delay_Us(50);
     LORA_RST_L;
     Delay_Us(50);
@@ -1680,9 +1688,8 @@ void SX126X_CADinit(void)
    * ★ 为什么后面两条不能省：发射路径会把 DIO 映射改成 TxDone、把射频开关
    *   切到 TX（SX126X_Awake -> WriteRxTx(1) / SetDioIrqParams(TX_DONE)），
    *   所以每个 CAD 周期必须把它们切回来，否则收不到 CAD 中断。
-   * ★ 上电/复位后标志位是 0，会自动完整配置一次，不存在"配置丢失"的窗口。
+   * Every RF hardware reset invalidates the cache; the next CAD configures it again.
    * ========================================================================== */
-  static uint8_t s_cad_cfg_done = 0U;
   if (s_cad_cfg_done == 0U)
   {
       SX126xSetPacketType( PACKET_TYPE_LORA );  //设置成LORA模式（温启动保留，只配一次）
@@ -2038,3 +2045,53 @@ void SX126X_Awake(uint8_t*cbuf, uint16_t Preamble_Length)
 //  LPM3_EXIT;
 //}
 
+
+/* Capture only a currently awake radio. Do not wake/clear IRQ/change modes for
+ * diagnostics. IRQ counters are individual aligned ISR snapshots, not a single
+ * atomic capture of all hardware signals. */
+static uint8_t radio_diag_can_read(void)
+{
+    return ((OperatingMode != MODE_SLEEP) && (OperatingMode != MODE_UNKNOWN) &&
+            (OperatingMode != MODE_RX_DC) && (LORA_BUSY_VAL == 0U)) ? 1U : 0U;
+}
+static uint8_t radio_diag_read_ok(uint32_t spi_before, uint16_t busy_before)
+{
+    return ((spi_before == g_radio_spi_fail_count) &&
+            (busy_before == SX126x_BusyTimeoutCnt) && (LORA_BUSY_VAL == 0U)) ? 1U : 0U;
+}
+void SX126xCaptureDiagnostic(RadioDiagSnapshot *s)
+{
+    uint32_t spi_before;
+    uint16_t busy_before;
+    if (s == NULL) { return; }
+    memset(s, 0, sizeof(*s));
+    s->rt = Rt_tick; s->sw_mode = (uint8_t)OperatingMode;
+    s->pins = (uint8_t)((LORA_BUSY_VAL != 0U ? 1U : 0U) |
+        (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_4) != GPIO_PIN_RESET ? 2U : 0U) |
+        (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_5) != GPIO_PIN_RESET ? 4U : 0U) |
+        (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0) != GPIO_PIN_RESET ? 8U : 0U) |
+        (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_1) != GPIO_PIN_RESET ? 16U : 0U) |
+        (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_2) != GPIO_PIN_RESET ? 32U : 0U));
+    s->exti_mask = (uint16_t)(EXTI->IMR & 0x31U);
+    s->exti_pending = (uint16_t)(EXTI->PR & 0x31U);
+    if (radio_diag_can_read() != 0U) {
+        spi_before = g_radio_spi_fail_count; busy_before = SX126x_BusyTimeoutCnt;
+        s->irq = SX126xGetIrqStatus();
+        if (radio_diag_read_ok(spi_before, busy_before) != 0U) { s->read_flags |= 2U; }
+    }
+    if (radio_diag_can_read() != 0U) {
+        spi_before = g_radio_spi_fail_count; busy_before = SX126x_BusyTimeoutCnt;
+        s->status = SX126xGetStatus().Value;
+        if (radio_diag_read_ok(spi_before, busy_before) != 0U) { s->read_flags |= 1U; }
+    }
+    if (radio_diag_can_read() != 0U) {
+        spi_before = g_radio_spi_fail_count; busy_before = SX126x_BusyTimeoutCnt;
+        s->errors = SX126xGetDeviceErrors().Value;
+        if (radio_diag_read_ok(spi_before, busy_before) != 0U) { s->read_flags |= 4U; }
+    }
+    s->busy_to = SX126x_BusyTimeoutCnt; s->standby_to = SX126x_StandbyTimeoutCnt;
+    s->tx_to = Lora_TxWaitTimeoutCnt; s->spi_fail = g_radio_spi_fail_count;
+    s->dio1 = g_radio_diag_irq.dio1; s->dio2 = g_radio_diag_irq.dio2;
+    s->dio3 = g_radio_diag_irq.dio3; s->cad_done = g_radio_diag_irq.cad_done;
+    s->cad_activity = g_radio_diag_irq.cad_activity; s->rx_irq = g_radio_diag_irq.rx_irq;
+}

@@ -146,8 +146,7 @@ void ALL_IO_CLOSE(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
 
-  HAL_UART_MspDeInit(&huart1);
-  HAL_UART_DeInit(&huart1);
+  UART1_DeInitSafe();  /* Clear UART state before the MSP disables its clock. */
 
   HAL_ADC_DeInit(&hadc);
   HAL_ADC_MspDeInit(&hadc);

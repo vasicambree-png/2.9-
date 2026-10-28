@@ -3374,12 +3374,27 @@ HAL_StatusTypeDef UART_CheckIdleState(UART_HandleTypeDef *huart)
   * @param Timeout   Timeout duration
   * @retval HAL status
   */
+/* Project extension: default preserves ST behavior. The application may bound
+ * its own USART1 ready-ack wait without changing other UARTs or data waits.
+ * Keep this hook when regenerating/replacing this locally patched HAL file. */
+__weak uint32_t HAL_UART_InitWaitExpired(UART_HandleTypeDef *huart, uint32_t Flag)
+{
+  UNUSED(huart);
+  UNUSED(Flag);
+  return 0U;
+}
+
 HAL_StatusTypeDef UART_WaitOnFlagUntilTimeout(UART_HandleTypeDef *huart, uint32_t Flag, FlagStatus Status,
                                               uint32_t Tickstart, uint32_t Timeout)
 {
   /* Wait until flag is set */
   while ((__HAL_UART_GET_FLAG(huart, Flag) ? SET : RESET) == Status)
   {
+    if (((Flag == USART_ISR_TEACK) || (Flag == USART_ISR_REACK)) &&
+        (HAL_UART_InitWaitExpired(huart, Flag) != 0U))
+    {
+      return HAL_TIMEOUT;
+    }
     /* Check for the Timeout */
     if (Timeout != HAL_MAX_DELAY)
     {

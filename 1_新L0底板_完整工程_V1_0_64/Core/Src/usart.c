@@ -102,38 +102,252 @@ void MX_DMA_Init(void)
   HAL_NVIC_EnableIRQ(DMA1_Channel4_5_6_7_IRQn);
 }
 
-/* ==========================================================================
- * MX_USART1_UART_Init ：协议口（对 CH584M）初始化
- * --------------------------------------------------------------------------
- * ★★★ V1_0_2 修正（第四轮）：HAL 失败**不再**调 Error_Handler()
- * --------------------------------------------------------------------------
- * 为什么必须改：本函数不只是开机调一次 —— 息屏读数据子系统**每一轮**
- * 都会调用它（usart.c 的 sleep_read_service()"上电"那一步，因为
- * ALL_IO_CLOSE() 进 STOP 前把 USART1 整个 DeInit 掉了）。
- * 一旦失败就 Error_Handler() -> __disable_irq() + while(1) ->
- * **每 2 秒被看门狗复位一次**的复位循环，且串口日志全无。
- * 而且 `HAL_UART_Init()` 内部等 TEACK/REACK 的超时是
- * HAL_UART_TIMEOUT_VALUE ≈ **9.3 小时**（HAL 库常量），中途不喂狗 ——
- * 正常不会触发（要时钟开着才会进那个等待），但一旦触发就是必然复位。
- * 现在改成"打印 + 返回"：上层（sleep_read_service）的等待会自然超时，
- * 本轮记一次失败计数并收尾，主循环照常跑，按键/光检测/LoRa 都不受影响。
- * ========================================================================== */
+/* USART1 ready-ack guard. The HAL extension is active only inside this
+ * project's MX_USART1_UART_Init; other UARTs retain the stock HAL behavior.
+ * No watchdog refresh in the wait: the finite poll budget also exits if both
+ * interrupt-driven clocks stall. That budget is not a calibrated duration. */
+#define UART1_INIT_ACK_TIMEOUT_MS  20U
+#define UART1_INIT_ACK_RT_TICKS    2U
+#define UART1_INIT_ACK_POLL_LIMIT  20000U
+extern volatile uint32_t Rt_tick;
+static uint8_t s_uart1_init_active, s_uart1_init_ready;
+static struct {
+    uint32_t start_ms, start_rt, polls, elapsed_ms;
+    uint32_t isr, cr1, cr3, brr, rcc_cr, rcc_ccipr, rcc_enr;
+    uint8_t stage, reason, captured;
+} s_uart1_init_diag;
+
+
+/* Exactly 64 bytes in an ARMCC UNINIT execution region. RAM retention is
+ * diagnostic only: POR/PDR invalidates it, and interrupted writes fail validation.
+ * word[1..14] are a last UART checkpoint, not proof that UART caused a reset. */
+#define UART1_RETAIN_MAGIC 0x55314432UL
+#define UART1_RETAIN_XOR   0x51A64C28UL
+enum {
+    U1D_BOOT = 1U, U1D_INIT_ENTER, U1D_INIT_CLEAN, U1D_MSP_READY,
+    U1D_WAIT_TE, U1D_WAIT_RE, U1D_INIT_OK, U1D_INIT_FAIL,
+    U1D_RX_ARM, U1D_RX_READY, U1D_STOP_BEGIN, U1D_STOP_DONE,
+    U1D_ORPHAN_IRQ, U1D_HARDFAULT
+};
+typedef struct { uint32_t word[16]; } UART1Retained;
+typedef char UART1RetainedSizeCheck[(sizeof(UART1Retained) == 64U) ? 1 : -1];
+#if defined(__CC_ARM)
+__attribute__((section("UART_NOINIT"), zero_init, used))
+#endif
+static volatile UART1Retained s_uart1_retained;
+static volatile uint32_t s_uart1_irq_count, s_uart1_orphan_count;
+
+static uint32_t uart1_retained_check(void)
+{
+    uint32_t check = UART1_RETAIN_XOR;
+    uint32_t i;
+    for (i = 1U; i < 15U; i++) { check ^= s_uart1_retained.word[i]; }
+    return check;
+}
+
+static void uart1_checkpoint(uint32_t stage)
+{
+    uint32_t enabled;
+    uint32_t saved_primask = __get_PRIMASK();
+    __disable_irq(); /* Keep the record coherent if an IRQ checkpoint nests. */
+    enabled = RCC->APB2ENR & RCC_APB2ENR_USART1EN;
+    s_uart1_retained.word[0] = 0U;
+    __DMB();
+    s_uart1_retained.word[1] = stage;
+    s_uart1_retained.word[2] = Rt_tick;
+    s_uart1_retained.word[3] = HAL_GetTick();
+    s_uart1_retained.word[4] = enabled ? USART1->ISR : 0U;
+    s_uart1_retained.word[5] = enabled ? USART1->CR1 : 0U;
+    s_uart1_retained.word[6] = enabled ? USART1->CR3 : 0U;
+    s_uart1_retained.word[7] = enabled ? USART1->BRR : 0U;
+    s_uart1_retained.word[8] = RCC->APB2ENR;
+    s_uart1_retained.word[9] = RCC->CCIPR;
+    s_uart1_retained.word[10] = (uint32_t)huart1.RxState;
+    s_uart1_retained.word[11] = (uint32_t)(uintptr_t)huart1.RxISR;
+    s_uart1_retained.word[12] = __get_IPSR();
+    s_uart1_retained.word[13] = s_uart1_irq_count;
+    s_uart1_retained.word[14] = s_uart1_orphan_count;
+    s_uart1_retained.word[15] = uart1_retained_check();
+    __DMB();
+    s_uart1_retained.word[0] = UART1_RETAIN_MAGIC;
+    __set_PRIMASK(saved_primask);
+}
+
+void UART1_DiagBootReport(void)
+{
+    uint32_t reset_csr = RCC->CSR; /* Call before CheckResetReason clears flags. */
+    if (((reset_csr & RCC_CSR_PORRSTF) == 0U) &&
+        ((reset_csr & (RCC_CSR_IWDGRSTF | RCC_CSR_SFTRSTF)) != 0U) &&
+        (s_uart1_retained.word[0] == UART1_RETAIN_MAGIC) &&
+        (s_uart1_retained.word[1] >= U1D_BOOT) &&
+        (s_uart1_retained.word[1] <= U1D_HARDFAULT) &&
+        (s_uart1_retained.word[15] == uart1_retained_check()))
+    {
+        printf("[U1PRE] csr=%08lX stage=%lu rt=%lu ms=%lu isr=%08lX cr1=%08lX cr3=%08lX brr=%lu enr=%08lX sel=%08lX rx=%lu handler=%08lX ipsr=%lu irq=%lu orphan=%lu\r\n",
+               (unsigned long)reset_csr,
+               (unsigned long)s_uart1_retained.word[1],
+               (unsigned long)s_uart1_retained.word[2],
+               (unsigned long)s_uart1_retained.word[3],
+               (unsigned long)s_uart1_retained.word[4],
+               (unsigned long)s_uart1_retained.word[5],
+               (unsigned long)s_uart1_retained.word[6],
+               (unsigned long)s_uart1_retained.word[7],
+               (unsigned long)s_uart1_retained.word[8],
+               (unsigned long)s_uart1_retained.word[9],
+               (unsigned long)s_uart1_retained.word[10],
+               (unsigned long)s_uart1_retained.word[11],
+               (unsigned long)s_uart1_retained.word[12],
+               (unsigned long)s_uart1_retained.word[13],
+               (unsigned long)s_uart1_retained.word[14]);
+    }
+    uart1_checkpoint(U1D_BOOT);
+}
+
+void UART1_DiagHardFault(void)
+{
+    uart1_checkpoint(U1D_HARDFAULT); /* No printf, flash write or watchdog feed. */
+}
+
+/* IRQ must remain masked until an actual RX ISR/buffer has been installed. */
+static void uart1_clear_old_state(void)
+{
+    USART1->CR1 = 0U;
+    USART1->CR2 = 0U;
+    USART1->CR3 = 0U;
+    __HAL_UART_CLEAR_FLAG(&huart1, UART_CLEAR_OREF | UART_CLEAR_NEF |
+                         UART_CLEAR_PEF | UART_CLEAR_FEF | UART_CLEAR_IDLEF |
+                         UART_CLEAR_TCF | UART_CLEAR_RTOF);
+    __HAL_UART_SEND_REQ(&huart1, UART_RXDATA_FLUSH_REQUEST);
+    HAL_NVIC_ClearPendingIRQ(USART1_IRQn);
+}
+
+void UART1_DeInitSafe(void)
+{
+    HAL_NVIC_DisableIRQ(USART1_IRQn);
+    huart1.Instance = USART1;
+    __HAL_RCC_USART1_CLK_ENABLE(); /* Registers must be writable before DeInit. */
+    s_uart1_init_ready = 0U;
+    uart1_checkpoint(U1D_STOP_BEGIN);
+    uart1_clear_old_state();
+    (void)HAL_UART_DeInit(&huart1); /* Calls MSP only after register cleanup. */
+    HAL_NVIC_ClearPendingIRQ(USART1_IRQn);
+    uart1_checkpoint(U1D_STOP_DONE);
+}
+
+void UART1_IRQHandlerSafe(void)
+{
+    s_uart1_irq_count++;
+    if (((USART1->ISR & USART_ISR_RXNE) != 0U) &&
+        ((USART1->CR1 & USART_CR1_RXNEIE) != 0U) &&
+        (huart1.RxISR == NULL))
+    {
+        s_uart1_orphan_count++;
+        uart1_checkpoint(U1D_ORPHAN_IRQ); /* Capture before clearing the evidence. */
+        HAL_NVIC_DisableIRQ(USART1_IRQn);
+        CLEAR_BIT(USART1->CR1, USART_CR1_RXNEIE | USART_CR1_PEIE);
+        CLEAR_BIT(USART1->CR3, USART_CR3_EIE);
+        __HAL_UART_CLEAR_FLAG(&huart1, UART_CLEAR_OREF | UART_CLEAR_NEF |
+                             UART_CLEAR_PEF | UART_CLEAR_FEF);
+        __HAL_UART_SEND_REQ(&huart1, UART_RXDATA_FLUSH_REQUEST);
+        huart1.RxState = HAL_UART_STATE_READY;
+        HAL_NVIC_ClearPendingIRQ(USART1_IRQn);
+        return; /* Main-loop sensor_rx_ensure_armed installs the next RX ISR. */
+    }
+    HAL_UART_IRQHandler(&huart1);
+}
+
+static void uart1_init_capture(uint8_t reason)
+{
+    s_uart1_init_diag.reason = reason;
+    s_uart1_init_diag.elapsed_ms = (uint32_t)(HAL_GetTick() - s_uart1_init_diag.start_ms);
+    s_uart1_init_diag.isr = USART1->ISR;
+    s_uart1_init_diag.cr1 = USART1->CR1;
+    s_uart1_init_diag.cr3 = USART1->CR3;
+    s_uart1_init_diag.brr = USART1->BRR;
+    s_uart1_init_diag.rcc_cr = RCC->CR;
+    s_uart1_init_diag.rcc_ccipr = RCC->CCIPR;
+    s_uart1_init_diag.rcc_enr = RCC->APB2ENR;
+    s_uart1_init_diag.captured = 1U;
+}
+
+/* Custom weak-hook override, not an ST public API. Stage 1=TEACK, 2=REACK;
+ * reason 1=20ms, 2=two 100ms ticks, 3=poll budget, 4=other HAL init failure. */
+uint32_t HAL_UART_InitWaitExpired(UART_HandleTypeDef *huart, uint32_t flag)
+{
+    uint8_t reason = 0U;
+    if ((s_uart1_init_active == 0U) || (huart != &huart1)) { return 0U; }
+    if (s_uart1_init_diag.stage != ((flag == USART_ISR_TEACK) ? 1U : 2U)) {
+        uart1_checkpoint((flag == USART_ISR_TEACK) ? U1D_WAIT_TE : U1D_WAIT_RE);
+    }
+    s_uart1_init_diag.stage = (flag == USART_ISR_TEACK) ? 1U : 2U;
+    s_uart1_init_diag.polls++;
+    if ((uint32_t)(HAL_GetTick() - s_uart1_init_diag.start_ms) >= UART1_INIT_ACK_TIMEOUT_MS) {
+        reason = 1U;
+    } else if ((uint32_t)(Rt_tick - s_uart1_init_diag.start_rt) >= UART1_INIT_ACK_RT_TICKS) {
+        reason = 2U;
+    } else if (s_uart1_init_diag.polls >= UART1_INIT_ACK_POLL_LIMIT) {
+        reason = 3U;
+    }
+    if (reason == 0U) { return 0U; }
+    uart1_init_capture(reason); /* Before HAL cleanup or DeInit disables clocks. */
+    return 1U;
+}
+
+uint8_t UART1_InitReady(void)
+{
+    return (uint8_t)((s_uart1_init_ready != 0U) &&
+        ((USART1->CR1 & USART_CR1_UE) != 0U) &&
+        ((USART1->ISR & (USART_ISR_TEACK | USART_ISR_REACK)) == (USART_ISR_TEACK | USART_ISR_REACK)));
+}
+
 void MX_USART1_UART_Init(void)
 {
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
-    printf("usart1 init fail\r\n");   /* ★ 不致命：见上面的说明 */
-  }
+    HAL_StatusTypeDef status;
+    HAL_NVIC_DisableIRQ(USART1_IRQn);
+    s_uart1_init_ready = 0U;
+    memset(&s_uart1_init_diag, 0, sizeof(s_uart1_init_diag));
+    huart1.Instance = USART1;
+    __HAL_RCC_USART1_CLK_ENABLE();
+    uart1_checkpoint(U1D_INIT_ENTER);
+    uart1_clear_old_state();
+    uart1_checkpoint(U1D_INIT_CLEAN);
+    huart1.Init.BaudRate = 115200;
+    huart1.Init.WordLength = UART_WORDLENGTH_8B;
+    huart1.Init.StopBits = UART_STOPBITS_1;
+    huart1.Init.Parity = UART_PARITY_NONE;
+    huart1.Init.Mode = UART_MODE_TX_RX;
+    huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+    huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+    huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+    huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+    s_uart1_init_diag.start_ms = HAL_GetTick();
+    s_uart1_init_diag.start_rt = Rt_tick;
+    s_uart1_init_active = 1U;
+    status = HAL_UART_Init(&huart1);
+    s_uart1_init_active = 0U;
+    if (status == HAL_OK) {
+        s_uart1_init_ready = 1U;
+        s_uart1_init_diag.stage = 3U;
+        uart1_init_capture(0U);
+        uart1_checkpoint(U1D_INIT_OK);
+        printf("[U1] rt=%lu rc=0 st=3 ms=%lu ack=%u\r\n",
+               (unsigned long)s_uart1_init_diag.start_rt,
+               (unsigned long)s_uart1_init_diag.elapsed_ms,
+               (unsigned)(((s_uart1_init_diag.isr & USART_ISR_TEACK) ? 1U : 0U) |
+                          ((s_uart1_init_diag.isr & USART_ISR_REACK) ? 2U : 0U)));
+    } else {
+        if (s_uart1_init_diag.captured == 0U) { uart1_init_capture(4U); }
+        uart1_checkpoint(U1D_INIT_FAIL);
+        printf("[U1] FAIL rt=%lu rc=%u st=%u why=%u ms=%lu polls=%lu isr=%08lX cr1=%08lX cr3=%08lX brr=%lu rcc=%08lX sel=%08lX enr=%08lX\r\n",
+               (unsigned long)s_uart1_init_diag.start_rt,
+               (unsigned)status, (unsigned)s_uart1_init_diag.stage, (unsigned)s_uart1_init_diag.reason,
+               (unsigned long)s_uart1_init_diag.elapsed_ms, (unsigned long)s_uart1_init_diag.polls,
+               (unsigned long)s_uart1_init_diag.isr, (unsigned long)s_uart1_init_diag.cr1,
+               (unsigned long)s_uart1_init_diag.cr3, (unsigned long)s_uart1_init_diag.brr,
+               (unsigned long)s_uart1_init_diag.rcc_cr, (unsigned long)s_uart1_init_diag.rcc_ccipr,
+               (unsigned long)s_uart1_init_diag.rcc_enr);
+        UART1_DeInitSafe(); /* Reset/clock-off; never continue with false READY. */
+    }
 }
 
 void MX_USART2_UART_Init(void)
@@ -195,7 +409,9 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     __HAL_LINKDMA(uartHandle,hdmatx,hdma_usart1_tx);
 
     HAL_NVIC_SetPriority(USART1_IRQn, 0, 2);
-    HAL_NVIC_EnableIRQ(USART1_IRQn);
+    /* sensor_rx_start enables this IRQ only after installing RxISR. */
+    HAL_NVIC_DisableIRQ(USART1_IRQn);
+    uart1_checkpoint(U1D_MSP_READY);
   }
   else if(uartHandle->Instance==USART2)
   {
@@ -280,7 +496,7 @@ void print_uart_sr(UART_HandleTypeDef *huart)
 #define SENSOR_MAX_FRAME     96U    /* 允许的最大帧长（规格里的帧是 87 字节）   */
 #define SENSOR_TX_TIMEOUT    100U   /* 单位 ms；115200 波特率下 7 字节耗时 0.61 ms */
 
-extern uint32_t Rt_tick;            /* 100 ms 系统节拍，定义在 stm32l0xx_it.c   */
+extern volatile uint32_t Rt_tick;            /* 100 ms 系统节拍，定义在 stm32l0xx_it.c   */
 
 /* ---- 接收字节 + 无锁环形缓冲（生产者：中断，消费者：主循环） */
  uint8_t   s_rx_byte;         /* HAL_UART_Receive_IT 的接收目标   */
@@ -439,13 +655,35 @@ void sensor_request_send(void)
 
 /* 首次启动接收，在 MX_USART1_UART_Init() 之后调用；上一次会话残留的字节
    （深度睡眠会重新初始化 USART1）在这里被丢掉 */
+static void uart1_rx_arm(void)
+{
+    HAL_StatusTypeDef status;
+    HAL_NVIC_DisableIRQ(USART1_IRQn);
+    uart1_checkpoint(U1D_RX_ARM);
+    /* USART1 RX is interrupt-only in this project; this abort does not touch TX. */
+    (void)HAL_UART_AbortReceive(&huart1);
+    __HAL_UART_CLEAR_FLAG(&huart1, UART_CLEAR_OREF | UART_CLEAR_NEF |
+                         UART_CLEAR_PEF | UART_CLEAR_FEF | UART_CLEAR_IDLEF);
+    __HAL_UART_SEND_REQ(&huart1, UART_RXDATA_FLUSH_REQUEST);
+    HAL_NVIC_ClearPendingIRQ(USART1_IRQn);
+    status = HAL_UART_Receive_IT(&huart1, &s_rx_byte, 1U);
+    if ((status == HAL_OK) && (huart1.RxISR != NULL) &&
+        (huart1.RxState == HAL_UART_STATE_BUSY_RX))
+    {
+        uart1_checkpoint(U1D_RX_READY);
+        HAL_NVIC_EnableIRQ(USART1_IRQn);
+    }
+}
+
 void sensor_rx_start(void)
 {
+    HAL_NVIC_DisableIRQ(USART1_IRQn);
     s_fifo_head = 0U;
     s_fifo_tail = 0U;
     s_line_len  = 0U;
 
-    (void)HAL_UART_Receive_IT(&huart1, &s_rx_byte, 1U);
+    if (UART1_InitReady() == 0U) { return; }
+    uart1_rx_arm();
 }
 
 /* 让 1 字节接收始终处于启动状态。HAL_UART_Receive_IT() 只有在 huart1.RxState 为
@@ -453,12 +691,10 @@ void sensor_rx_start(void)
    重新启动，而不是一直死在那里。 */
 static void sensor_rx_ensure_armed(void)
 {
-    if (huart1.RxState == HAL_UART_STATE_READY)
+    if ((UART1_InitReady() != 0U) && (huart1.RxState == HAL_UART_STATE_READY))
     {
-        if (HAL_UART_Receive_IT(&huart1, &s_rx_byte, 1U) == HAL_OK)
-        {
-            s_rearm++;
-        }
+        uart1_rx_arm();
+        if (huart1.RxState == HAL_UART_STATE_BUSY_RX) { s_rearm++; }
     }
 }
 
@@ -1414,7 +1650,21 @@ void sleep_read_service(void)
             /* 息屏进 STOP 前 ALL_IO_CLOSE() 已把 USART1 整个 DeInit 掉了，
                这里重新初始化 + 重启 1 字节中断接收（顺手丢掉残留字节） */
             MX_USART1_UART_Init();
-            sensor_rx_start();
+            sensor_rx_start(); /* Clears old buffers; does not arm a failed UART. */
+            if (UART1_InitReady() == 0U)
+            {
+                s_sleep_read_tmo++;
+                s_sleep_request_active = 0U;
+                s_req_pending = 0U;
+                g_slp_keep_awake = 0U;
+                s_sleep_state = SLP_ST_IDLE;
+                s_sleep_chunks = 0U;
+                lcd_power_off();
+                sleep_read_advance_schedule();
+                printf("[COLLECT] uart-init failed rt=%lu next=%lu\r\n",
+                       (unsigned long)Rt_tick, (unsigned long)s_sleep_next_read_tick);
+                return;
+            }
 
             g_slp_keep_awake   = 1U;        /* 读取窗口内禁止进 STOP */
             s_sleep_state      = SLP_ST_BOOT;
@@ -1492,8 +1742,7 @@ void sleep_read_service(void)
         default:
             /* ⑤ 断电 + 关串口省电（与 ALL_IO_CLOSE() 同一对调用） */
             sensor_rx_task();               /* 落袋最后一帧 */
-            HAL_UART_MspDeInit(&huart1);
-            HAL_UART_DeInit(&huart1);
+            UART1_DeInitSafe();
             lcd_power_off();
 
             s_sleep_request_active = 0U;

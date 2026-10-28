@@ -362,7 +362,7 @@
             </VariousControls>
           </Aads>
           <LDads>
-            <umfTarg>1</umfTarg>
+            <umfTarg>0</umfTarg>
             <Ropi>0</Ropi>
             <Rwpi>0</Rwpi>
             <noStLib>0</noStLib>
@@ -371,7 +371,7 @@
             <TextAddressRange></TextAddressRange>
             <DataAddressRange></DataAddressRange>
             <pXoBase></pXoBase>
-            <ScatterFile></ScatterFile>
+            <ScatterFile>.\uart_fault_noinit.sct</ScatterFile>
             <IncludeLibs></IncludeLibs>
             <IncludeLibsPath></IncludeLibsPath>
             <Misc></Misc>
@@ -473,6 +473,11 @@
               <FileName>LoraPro.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\User\LoraPro.c</FilePath>
+            </File>
+            <File>
+              <FileName>LoraTrace.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\User\LoraTrace.c</FilePath>
             </File>
             <File>
               <FileName>Sx126x_Driver.c</FileName>
