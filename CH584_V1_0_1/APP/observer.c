@@ -16,6 +16,7 @@
 #include "CONFIG.h"
 #include "observer.h"
 #include "Usart3_task.h"
+#include "Flash.h"
 
 extern volatile uint8_t SW_SCAN_STATE ; //
 
@@ -315,31 +316,39 @@ extern data_LIST Data_list1;
 void observer_set_collection_enabled(uint8_t state)
 {
     uint8_t enabled = (state == 1u);
+    uint8_t state_changed = !g_collection_state_seen || g_collection_state != state;
     bStatus_t scan_status = SUCCESS;
     g_collection_state = state;
     g_collection_state_seen = 1;
     g_collection_state_frames++;
-    if (enabled == g_scan_enable) return;
 
-    /* Close the producer gate before cancellation can report completion. */
-    g_scan_enable = enabled;
-    g_adv_q_head = g_adv_q_tail;
-    g_adv_seen = 0;
-    g_adv_quiet_sec = 0;
-    if (!enabled)
+    if (enabled != g_scan_enable)
     {
-        observer_round_clear(); /* Do not report a partial pre-stop round. */
-        if (g_observer_ready) scan_status = GAPRole_ObserverCancelDiscovery();
+        /* Close the producer gate before cancellation can report completion. */
+        g_scan_enable = enabled;
+        g_adv_q_head = g_adv_q_tail;
+        g_adv_seen = 0;
+        g_adv_quiet_sec = 0;
+        if (!enabled)
+        {
+            observer_round_clear(); /* Do not report a partial pre-stop round. */
+            if (g_observer_ready) scan_status = GAPRole_ObserverCancelDiscovery();
+        }
+        else if (g_observer_ready)
+        {
+            scan_status = GAPRole_ObserverStartDiscovery(DEFAULT_DISCOVERY_MODE,
+                                                         DEFAULT_DISCOVERY_ACTIVE_SCAN,
+                                                         DEFAULT_DISCOVERY_WHITE_LIST);
+        }
+        PRINT("[BLE-PWR] change state=%u en=%u ready=%u scan_rc=%02X\r\n",
+              (unsigned int)state, (unsigned int)g_scan_enable,
+              (unsigned int)g_observer_ready, (unsigned int)scan_status);
     }
-    else if (g_observer_ready)
-    {
-        scan_status = GAPRole_ObserverStartDiscovery(DEFAULT_DISCOVERY_MODE,
-                                                     DEFAULT_DISCOVERY_ACTIVE_SCAN,
-                                                     DEFAULT_DISCOVERY_WHITE_LIST);
-    }
-    PRINT("[BLE-PWR] change state=%u en=%u ready=%u scan_rc=%02X\r\n",
-          (unsigned int)state, (unsigned int)g_scan_enable,
-          (unsigned int)g_observer_ready, (unsigned int)scan_status);
+    /* Main loop only. One attempt per new valid state, even on write failure;
+     * repeated home frames and display wake never repeatedly erase Flash. */
+    if (state_changed && state <= 1u && power_state_store_save(state) != 0u)
+        PRINT("[BLE-PWR] persist failed state=%u; runtime state retained\r\n",
+              (unsigned int)state);
 }
 
 void Observer_Init()

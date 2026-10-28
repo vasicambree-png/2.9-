@@ -46,4 +46,9 @@ int     binding_store_load(void);
 /* 清除 Flash 中已保存的绑定记录（整块擦除）。返回 BIND_STORE_STATUS_OK / _FAIL */
 uint8_t binding_store_clear(void);
 
+/* Independent Data-Flash block 0x1000. 0=readback-verified/valid, 1=failure.
+ * Main-loop/startup only. Invalid records load as OFF; unchanged saves skip I/O. */
+uint8_t power_state_store_load(uint8_t *state);
+uint8_t power_state_store_save(uint8_t state);
+
 #endif

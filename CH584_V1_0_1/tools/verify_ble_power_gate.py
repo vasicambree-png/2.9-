@@ -77,6 +77,9 @@ static uint16_t s_last_ok, s_last_rej, s_last_drop, s_last_rst, s_last_busy, s_l
 static uint8_t s_last_qmax;
 static uint32_t g_round_mask, g_round_last_sec, g_round_sec;
 static unsigned starts, cancels, processed;
+static unsigned store_attempts, store_fail;
+static uint8_t power_state_store_save(uint8_t state)
+{ assert(state<=1u); ++store_attempts; return (uint8_t)store_fail; }
 static bStatus_t GAPRole_ObserverStartDiscovery(unsigned a,unsigned b,unsigned c)
 { (void)a; (void)b; (void)c; ++starts; return SUCCESS; }
 static bStatus_t GAPRole_ObserverCancelDiscovery(void) { ++cancels; return SUCCESS; }
@@ -129,6 +132,8 @@ int main(int argc, char **argv)
     assert(!g_scan_enable && !starts && !cancels);
     assert(!processed && !g_adv_rx_cnt);
     observer_set_collection_enabled(0); /* Delayed controller OFF arrives. */
+    assert(store_attempts==1);
+    observer_set_collection_enabled(0); assert(store_attempts==1);
     event.gap.opcode=GAP_DEVICE_DISCOVERY_EVENT; ObserverEventCB(&event);
     assert(g_observer_ready && !starts);
     for(unsigned i=0;i<25;i++) observer_ble_stat_tick();
@@ -171,6 +176,12 @@ int main(int argc, char **argv)
     }
     assert(processed==71);
     assert(g_collection_state_seen && g_collection_state==1 && g_collection_state_frames>140);
+    store_fail=1;
+    unsigned attempted=store_attempts;
+    observer_set_collection_enabled(0);
+    assert(!g_scan_enable && store_attempts==attempted+1);
+    for(unsigned i=0;i<20;i++) observer_set_collection_enabled(0);
+    assert(store_attempts==attempted+1); /* A failure cannot hammer Flash per frame. */
     unsigned before=diagnostics;
     for(unsigned i=0;i<9;i++) observer_power_diag_tick();
     assert(diagnostics==before);

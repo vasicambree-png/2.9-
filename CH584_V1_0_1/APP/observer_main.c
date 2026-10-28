@@ -92,7 +92,7 @@ int main(void)
 #endif
     DelayMs(50);
     PRINT("%s\n", VER_LIB);
-    PRINT("[FW] BLE_POWER_BOOT_GATE_20261028_2\r\n");
+    PRINT("[FW] BLE_POWER_PERSIST_20261028_3\r\n");
     PRINT("[RESET] enabled=%u cause=0x%02X\r\n",
           (unsigned int)reset_enabled, (unsigned int)reset_cause);
     if (!reset_enabled)
@@ -141,6 +141,15 @@ int main(void)
      *   绝不会带着 Flash 里的垃圾数据运行。 */
     PRINT("[BOOT] 9  binding_store_load\r\n");
     binding_store_load();
+
+    /* Before the TMOS loop/first BLE callback: restore without waiting for
+     * the controller's first page. load primes the save cache, so applying
+     * the restored value does not erase or write Flash. */
+    {
+        uint8_t saved_state = 0;
+        if (power_state_store_load(&saved_state) == 0u)
+            observer_set_collection_enabled(saved_state);
+    }
 
     PRINT("[BOOT] 10 Main_Circulation\r\n");
     Main_Circulation();

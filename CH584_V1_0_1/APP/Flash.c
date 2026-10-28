@@ -681,3 +681,79 @@ uint8_t binding_store_clear(void)
           BIND_STORE_BASE, BIND_STORE_ERASE_LEN);
     return BIND_STORE_STATUS_OK;
 }
+
+/* POWER_STATE_STORE_BEGIN
+ * Independent erase block: binding block 0 and BLE SNV block 0x7000 stay intact.
+ * The record is 16 bytes: magic, version/state, its complement, commit tag.
+ * Do not treat a torn/invalid record as ON. No write occurs during boot restore.
+ */
+#define POWER_STORE_BASE       0x1000u
+#define POWER_STORE_ERASE_LEN  EEPROM_BLOCK_SIZE
+#define POWER_STORE_MAGIC      0x57504843u
+#define POWER_STORE_VERSION    0x00010000u
+#define POWER_STORE_COMMIT     0x4B4F5750u
+
+#if (POWER_STORE_BASE % EEPROM_BLOCK_SIZE) != 0 || \
+    (POWER_STORE_BASE < (BIND_STORE_BASE + BIND_STORE_ERASE_LEN)) || \
+    ((POWER_STORE_BASE + POWER_STORE_ERASE_LEN) > BLE_SNV_ADDR) || \
+    ((POWER_STORE_BASE + POWER_STORE_ERASE_LEN) > EEPROM_MAX_SIZE)
+#error "Power state storage overlaps another Data-Flash region"
+#endif
+
+__attribute__((aligned(4))) static uint32_t s_power_img[4];
+__attribute__((aligned(4))) static uint32_t s_power_rd[4];
+static uint8_t s_power_cached_valid;
+static uint8_t s_power_cached_state;
+
+static uint8_t power_state_record_valid(const uint32_t *record)
+{
+    return record[0] == POWER_STORE_MAGIC &&
+           (record[1] == POWER_STORE_VERSION || record[1] == (POWER_STORE_VERSION | 1u)) &&
+           record[2] == ~record[1] && record[3] == POWER_STORE_COMMIT;
+}
+
+__HIGH_CODE
+uint8_t power_state_store_load(uint8_t *state)
+{
+    s_power_cached_valid = 0;
+    if (state == NULL) return 1u;
+    *state = 0;
+    if (EEPROM_READ(POWER_STORE_BASE, s_power_rd, sizeof(s_power_rd)) != 0u ||
+        !power_state_record_valid(s_power_rd))
+    {
+        PRINT("[BLE-PWR] no valid stored state; wait for controller\r\n");
+        return 1u;
+    }
+    s_power_cached_state = (uint8_t)(s_power_rd[1] & 1u);
+    s_power_cached_valid = 1;
+    *state = s_power_cached_state;
+    PRINT("[BLE-PWR] restored state=%u\r\n", (unsigned int)*state);
+    return 0u;
+}
+
+__HIGH_CODE
+uint8_t power_state_store_save(uint8_t state)
+{
+    uint8_t i;
+    if (state > 1u) return 1u;
+    if (s_power_cached_valid && s_power_cached_state == state) return 0u;
+
+    s_power_cached_valid = 0;
+    s_power_img[0] = POWER_STORE_MAGIC;
+    s_power_img[1] = POWER_STORE_VERSION | state;
+    s_power_img[2] = ~s_power_img[1];
+    s_power_img[3] = POWER_STORE_COMMIT;
+    if (EEPROM_ERASE(POWER_STORE_BASE, POWER_STORE_ERASE_LEN) != 0u ||
+        EEPROM_WRITE(POWER_STORE_BASE, s_power_img, sizeof(s_power_img)) != 0u ||
+        EEPROM_READ(POWER_STORE_BASE, s_power_rd, sizeof(s_power_rd)) != 0u)
+        return 1u;
+    for (i = 0; i < 4u; i++)
+        if (s_power_rd[i] != s_power_img[i]) return 1u;
+    if (!power_state_record_valid(s_power_rd)) return 1u;
+
+    s_power_cached_state = state;
+    s_power_cached_valid = 1;
+    PRINT("[BLE-PWR] stored state=%u verified\r\n", (unsigned int)state);
+    return 0u;
+}
+/* POWER_STATE_STORE_END */
