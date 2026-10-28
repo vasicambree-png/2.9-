@@ -30,6 +30,11 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     observer = (ROOT / "APP/observer.c").read_text(encoding="utf-8")
     uart = (ROOT / "APP/Usart3_task.c").read_text(encoding="utf-8")
+    # Use real startup initializers: a default-on regression must fail the replay.
+    boot_globals = "\n".join(re.search(
+        r"(?m)^(?:(?:static|volatile)\s+)*uint(?:8|32)_t\s+" + name + r"\s*=\s*[^;]+;",
+        observer).group() for name in ("g_scan_enable", "g_observer_ready",
+        "g_collection_state", "g_collection_state_seen", "g_collection_state_frames"))
     queue = observer[observer.index("typedef struct\n{\n    uint8_t addr[6];"):
                      observer.index("/* ---- 可见性计数")]
     save = block(uart, "if (((uint8_t)param_data[0] == UI_MSG_PARAM_SAVE_OK ||")
@@ -63,10 +68,8 @@ typedef struct {
     struct { uint8_t opcode; } gap;
     struct { uint8_t addr[6], eventType, *pEvtData, dataLen; int8_t rssi; } deviceInfo;
 } gapRoleEvent_t;
-static volatile uint8_t g_scan_enable=1;
-static uint8_t g_observer_ready, g_adv_seen, g_adv_q_max;
-static uint8_t g_collection_state=1, g_collection_state_seen;
-static uint32_t g_collection_state_frames, g_adv_rx_cnt;
+static uint8_t g_adv_seen, g_adv_q_max;
+static uint32_t g_adv_rx_cnt;
 static uint16_t g_adv_quiet_sec, g_adv_q_drop;
 static uint16_t g_bind_ok_cnt, g_bind_reject_cnt;
 static uint16_t g_scan_restart_cnt, g_scan_busy_cnt, g_scan_err_cnt;
@@ -97,15 +100,35 @@ static void save_message(test_page_t *pData, unsigned code)
 { uint16_t param_data[1]={(uint16_t)code};
 '''+save+"\n}\n"
     tests = r'''
-int main(void)
+int main(int argc, char **argv)
 {
+    (void)argv;
     gapRoleEvent_t event={0};
     uint8_t addr[6]={1}, data[3]={2,3,4};
     test_page_t page={3,5,{0}};
-    /* Off before stack readiness, followed by init/late completion. */
-    observer_set_collection_enabled(0);
-    assert(!g_scan_enable && !starts && !cancels);
+    /* Reproduce the reported 2.3-second gap: stack starts before an OFF frame.
+     * Unknown state must not scan or accept a single advertisement. */
+    if (g_collection_state_seen || g_scan_enable) {
+        puts("FAIL: collection enabled before any controller state after reset");
+        return 1;
+    }
+    if (argc > 1) {
+        observer_set_collection_enabled(1);
+        assert(g_scan_enable && !starts && !g_observer_ready);
+        event.gap.opcode=GAP_DEVICE_INIT_DONE_EVENT; ObserverEventCB(&event);
+        SACN_DATA(addr,0,data,3,-40); observer_adv_drain(16);
+        assert(starts==1 && processed==1 && g_adv_rx_cnt==1);
+        puts("PASS: explicit ON before BLE initialization starts normal collection");
+        return 0;
+    }
     event.gap.opcode=GAP_DEVICE_INIT_DONE_EVENT; ObserverEventCB(&event);
+    for(unsigned i=0;i<3;i++) {
+        SACN_DATA(addr,0,data,3,-40); observer_adv_drain(16);
+        observer_ble_stat_tick();
+    }
+    assert(!g_scan_enable && !starts && !cancels);
+    assert(!processed && !g_adv_rx_cnt);
+    observer_set_collection_enabled(0); /* Delayed controller OFF arrives. */
     event.gap.opcode=GAP_DEVICE_DISCOVERY_EVENT; ObserverEventCB(&event);
     assert(g_observer_ready && !starts);
     for(unsigned i=0;i<25;i++) observer_ble_stat_tick();
@@ -156,10 +179,11 @@ int main(void)
     return 0;
 }
 '''
-    (out / "test.c").write_text(prefix+queue+production+ui+tests, encoding="utf-8")
+    (out / "test.c").write_text(prefix+boot_globals+queue+production+ui+tests, encoding="utf-8")
     command = ('@echo off\ncall "'+str(args.vcvars)+'" >nul\n'
                'if errorlevel 1 exit /b 1\ncl /nologo /utf-8 /W4 test.c /Fe:test.exe\n'
-               'if errorlevel 1 exit /b 1\ntest.exe\n')
+               'if errorlevel 1 exit /b 1\ntest.exe\n'
+               'if errorlevel 1 exit /b 1\ntest.exe on-before-init\n')
     script = out / "run.cmd"
     script.write_text(command, encoding="utf-8")
     result = subprocess.run(["cmd.exe", "/d", "/c", str(script)], cwd=out,

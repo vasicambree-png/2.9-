@@ -164,9 +164,9 @@ static uint32_t g_rsp_sec = 0;
  * 按页面驱动口径就应是"只更新"；1 秒事件会在第一次 tick 时按页面重新判定。
  * （旧代码初值是 BIND，配合"开机 30 秒窗口"；窗口删除后 BIND 初值已无意义。） */
 volatile uint8_t g_scan_mode   = SCAN_MODE_DATA;   /* 由 1 秒事件按当前页面切换 */
-volatile uint8_t g_scan_enable = 1;                /* Updated from committed controller state. */
+volatile uint8_t g_scan_enable = 0;                /* Wait for explicit ON after every reset. */
 static uint8_t g_observer_ready = 0;
-static uint8_t g_collection_state = 1;
+static uint8_t g_collection_state = 0;
 static uint8_t g_collection_state_seen = 0;
 static uint32_t g_collection_state_frames = 0;
 

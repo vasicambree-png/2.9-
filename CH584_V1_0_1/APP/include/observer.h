@@ -59,7 +59,7 @@ extern "C" {
 #define SCAN_MODE_DATA      0       /* 只更新：按绑定表填数据 */
 #define SCAN_MODE_BIND      1       /* 绑定：解析名字 + add_binding */
 extern volatile uint8_t g_scan_mode;    /* 由 1 秒事件按当前页面切换（见上） */
-extern volatile uint8_t g_scan_enable;  /* Committed communication state; initially enabled. */
+extern volatile uint8_t g_scan_enable;  /* Disabled after reset until explicit committed ON. */
 /* Main-loop/TMOS only: state 1 resumes collection, other values stop it. */
 void observer_set_collection_enabled(uint8_t state);
 
