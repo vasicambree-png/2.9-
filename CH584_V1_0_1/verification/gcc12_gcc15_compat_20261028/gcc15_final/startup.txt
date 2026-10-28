@@ -1,0 +1,8 @@
+
+verification/gcc12_gcc15_compat_20261028/gcc15_final/CH584M_TFT_HB.elf:     file format elf32-littleriscv
+
+
+Disassembly of section .init:
+
+00000000 <_sinit>:
+   0:	4980506f          	j	5498 <handle_reset>

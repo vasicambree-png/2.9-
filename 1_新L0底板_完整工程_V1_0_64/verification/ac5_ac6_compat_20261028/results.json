@@ -1,0 +1,86 @@
+{
+  "ac5": {
+    "warnings": 50,
+    "stack_pointer": "0x20001e18",
+    "reset_vector": "0x80000d9",
+    "flash_bytes": 53964,
+    "retained_address": "0x20001fc0",
+    "retained_bytes": 64,
+    "scatter_table": [
+      [
+        134271632,
+        536870912,
+        724,
+        134220348
+      ],
+      [
+        134271692,
+        536871636,
+        6980,
+        134254624
+      ]
+    ],
+    "hex_axf_equal": true,
+    "no_bkpt": true,
+    "hex_sha256": "74b4342ea65eaa0c8dbef96ac7c554a4ddad018770370cb68767ad54e9726d92",
+    "warning_classes": {}
+  },
+  "ac6": {
+    "warnings": 1628,
+    "stack_pointer": "0x20001e80",
+    "reset_vector": "0x80000d5",
+    "flash_bytes": 59576,
+    "retained_address": "0x20001fc0",
+    "retained_bytes": 64,
+    "scatter_table": [
+      [
+        134277240,
+        536870912,
+        64,
+        134272148
+      ],
+      [
+        134277304,
+        536870976,
+        7744,
+        134272164
+      ]
+    ],
+    "hex_axf_equal": true,
+    "no_bkpt": true,
+    "hex_sha256": "d41f4c48972a2ba83724b0dd4fb709e47351a693f5de03589ca4474fcfaf1919",
+    "warning_classes": {
+      "-Wpadded": 138,
+      "-Wmissing-variable-declarations": 126,
+      "-Wshadow": 3,
+      "-Wunused-parameter": 8,
+      "-Wmissing-prototypes": 41,
+      "-Wunused-variable": 1,
+      "-Wdeclaration-after-statement": 24,
+      "-Wnonportable-include-path": 12,
+      "-Winvalid-source-encoding": 1,
+      "-Wmissing-noreturn": 4,
+      "-Wcovered-switch-default": 6,
+      "-Wunsafe-buffer-usage": 1102,
+      "-Wempty-translation-unit": 3,
+      "-Wcast-qual": 4,
+      "-Wimplicit-int-conversion": 17,
+      "-Wextra-semi-stmt": 9,
+      "-Wunused-but-set-variable": 1,
+      "-Wbad-function-cast": 3,
+      "-Wsign-conversion": 2,
+      "-Wswitch-enum": 44,
+      "-Wtautological-overlap-compare": 1,
+      "-Wunused-function": 2,
+      "-Wimplicit-float-conversion": 8,
+      "-Wstrict-prototypes": 2,
+      "-Wdouble-promotion": 2,
+      "-Wfloat-conversion": 3,
+      "-Wcast-align": 15,
+      "-Wundef": 46
+    }
+  },
+  "verified": true,
+  "flashed": false,
+  "hardware_verified": false
+}

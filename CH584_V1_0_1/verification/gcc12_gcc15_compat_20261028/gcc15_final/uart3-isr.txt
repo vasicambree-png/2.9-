@@ -1,0 +1,55 @@
+
+verification/gcc12_gcc15_compat_20261028/gcc15_final/CH584M_TFT_HB.elf:     file format elf32-littleriscv
+
+
+Disassembly of section .init:
+
+Disassembly of section .highcode_init:
+
+Disassembly of section .highcode:
+
+20000842 <UART3_IRQHandler>:
+20000842:	1141                	addi	sp,sp,-16
+20000844:	00011723          	sh	zero,14(sp)
+20000848:	400047b7          	lui	a5,0x40004
+2000084c:	c047c783          	lbu	a5,-1020(a5) # 40003c04 <_eusrstack+0x1ffebc04>
+20000850:	4719                	li	a4,6
+20000852:	8bbd                	andi	a5,a5,15
+20000854:	00e78b63          	beq	a5,a4,2000086a <UART3_IRQHandler+0x28>
+20000858:	4731                	li	a4,12
+2000085a:	04e78d63          	beq	a5,a4,200008b4 <UART3_IRQHandler+0x72>
+2000085e:	4711                	li	a4,4
+20000860:	02e78163          	beq	a5,a4,20000882 <UART3_IRQHandler+0x40>
+20000864:	0141                	addi	sp,sp,16
+20000866:	30200073          	mret
+2000086a:	400047b7          	lui	a5,0x40004
+2000086e:	c057c783          	lbu	a5,-1019(a5) # 40003c05 <_eusrstack+0x1ffebc05>
+20000872:	8bf9                	andi	a5,a5,30
+20000874:	dbe5                	beqz	a5,20000864 <UART3_IRQHandler+0x22>
+20000876:	8f01d783          	lhu	a5,-1808(gp) # 200056f8 <uart3_line_err_cnt>
+2000087a:	0785                	addi	a5,a5,1
+2000087c:	8ef19823          	sh	a5,-1808(gp) # 200056f8 <uart3_line_err_cnt>
+20000880:	b7d5                	j	20000864 <UART3_IRQHandler+0x22>
+20000882:	0000d517          	auipc	a0,0xd
+20000886:	47e50513          	addi	a0,a0,1150 # 2000dd00 <TxBuff>
+2000088a:	e000a097          	auipc	ra,0xe000a
+2000088e:	1ca080e7          	jalr	458(ra) # aa54 <UART3_RecvString>
+20000892:	8768                	.insn	2, 0x8768
+20000894:	873c                	.insn	2, 0x873c
+20000896:	d7f9                	beqz	a5,20000864 <UART3_IRQHandler+0x22>
+20000898:	8730                	.insn	2, 0x8730
+2000089a:	0000d597          	auipc	a1,0xd
+2000089e:	46658593          	addi	a1,a1,1126 # 2000dd00 <TxBuff>
+200008a2:	0000d517          	auipc	a0,0xd
+200008a6:	52650513          	addi	a0,a0,1318 # 2000ddc8 <app_uart_rx_fifo>
+200008aa:	e0005097          	auipc	ra,0xe0005
+200008ae:	d0c080e7          	jalr	-756(ra) # 55b6 <app_drv_fifo_write_from_addr>
+200008b2:	bf4d                	j	20000864 <UART3_IRQHandler+0x22>
+200008b4:	0000d517          	auipc	a0,0xd
+200008b8:	44c50513          	addi	a0,a0,1100 # 2000dd00 <TxBuff>
+200008bc:	e000a097          	auipc	ra,0xe000a
+200008c0:	198080e7          	jalr	408(ra) # aa54 <UART3_RecvString>
+200008c4:	8768                	.insn	2, 0x8768
+200008c6:	bfc9                	j	20000898 <UART3_IRQHandler+0x56>
+
+Disassembly of section .text:

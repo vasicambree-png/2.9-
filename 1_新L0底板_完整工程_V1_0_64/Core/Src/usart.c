@@ -28,11 +28,13 @@ uint32_t last_transfer_len = 0;
 #define PRINTF_ON   1
 
 /* printf redirect to USART2 */
-#ifdef __GNUC__
+#if defined(__CC_ARM) || defined(__ARMCC_VERSION)
+#define PUTCHAR_PROTOTYPE int fputc(int ch, FILE *f)
+#elif defined(__GNUC__)
 #define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
 #else
 #define PUTCHAR_PROTOTYPE int fputc(int ch, FILE *f)
-#endif /* __GNUC__ */
+#endif
 
 /* ==========================================================================
  * ★★ 第二轮修正：printf / UART 阻塞发送的超时必须有限
@@ -133,6 +135,9 @@ typedef struct { uint32_t word[16]; } UART1Retained;
 typedef char UART1RetainedSizeCheck[(sizeof(UART1Retained) == 64U) ? 1 : -1];
 #if defined(__CC_ARM)
 __attribute__((section("UART_NOINIT"), zero_init, used))
+#elif defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6010050)
+/* armclang needs a .bss prefix for a zero-initialized input section. */
+__attribute__((section(".bss.UART_NOINIT"), used))
 #endif
 static volatile UART1Retained s_uart1_retained;
 static volatile uint32_t s_uart1_irq_count, s_uart1_orphan_count;

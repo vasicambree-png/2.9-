@@ -52,6 +52,7 @@
 					"${project}/HAL/KEY.c",
 					"${project}/verification",
 					"${project}/obj",
+					"${project}/obj_gcc15",
 					"${project}/tools",
 					"${project}/.git"
 				],
