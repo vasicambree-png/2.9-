@@ -796,6 +796,7 @@ uint16_t usart_ProcessEvent(uint8_t task_id, uint16_t events)
          *        本来就在跑（正常，会随现场无广播源每 10 秒 +1）/ 其它=异常。 */
         observer_ble_stat_tick();
         observer_ble_diag_tick();   /* ★ 第 9 轮：每 5 秒无条件打印扫描诊断 */
+        observer_power_diag_tick();
         ui_latency_report();        /* Diagnostic build only; at most once per second. */
 
     tmos_start_task(usartTaskId, START_TIMER_EVT, 1600);//10ms

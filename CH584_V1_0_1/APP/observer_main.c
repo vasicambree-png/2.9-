@@ -92,6 +92,7 @@ int main(void)
 #endif
     DelayMs(50);
     PRINT("%s\n", VER_LIB);
+    PRINT("[FW] BLE_POWER_DIAG_20261028_1\r\n");
     PRINT("[RESET] enabled=%u cause=0x%02X\r\n",
           (unsigned int)reset_enabled, (unsigned int)reset_cause);
     if (!reset_enabled)

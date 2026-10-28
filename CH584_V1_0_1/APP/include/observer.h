@@ -80,6 +80,7 @@ void observer_adv_drain(uint16_t max_items);
  *   - 看门狗：连续 ADV_QUIET_RESTART_SEC(10) 秒没有任何广播包且 g_scan_enable=1 时
  *     重新 GAPRole_ObserverStartDiscovery()（兜底 TGAP_DISC_SCAN=0 的语义风险）。 */
 void observer_ble_stat_tick(void);
+void observer_power_diag_tick(void); /* 10-second receive/gate snapshot, main loop only. */
 void observer_ble_diag_tick(void);   /* 第 9 轮：蓝牙扫描诊断打印 */
 
 /* 回调路径日志总闸（契约 §2.3）：默认 0 = 静音。

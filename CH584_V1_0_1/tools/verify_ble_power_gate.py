@@ -22,9 +22,11 @@ def block(source, marker):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vcvars", type=Path, required=True)
+    parser.add_argument("--out", default="verification/ble_power_gate_20261028/host")
     args = parser.parse_args()
     assert args.vcvars.is_file()
-    out = ROOT / "verification/ble_power_gate_20261028/host"
+    out = (ROOT / args.out).resolve()
+    out.relative_to(ROOT)
     out.mkdir(parents=True, exist_ok=True)
     observer = (ROOT / "APP/observer.c").read_text(encoding="utf-8")
     uart = (ROOT / "APP/Usart3_task.c").read_text(encoding="utf-8")
@@ -52,7 +54,9 @@ def main():
 #define SUCCESS 0
 #define bleAlreadyInRequestedMode 0x11
 #define BLE_LOG(...) ((void)0)
-#define PRINT(...) ((void)0)
+static unsigned diagnostics;
+static void diag_print(const char *format, ...) { (void)format; ++diagnostics; }
+#define PRINT(...) diag_print(__VA_ARGS__)
 #define tmos_memcpy memcpy
 typedef uint8_t bStatus_t;
 typedef struct {
@@ -61,7 +65,9 @@ typedef struct {
 } gapRoleEvent_t;
 static volatile uint8_t g_scan_enable=1;
 static uint8_t g_observer_ready, g_adv_seen, g_adv_q_max;
-static uint16_t g_adv_quiet_sec, g_adv_rx_cnt, g_adv_q_drop;
+static uint8_t g_collection_state=1, g_collection_state_seen;
+static uint32_t g_collection_state_frames, g_adv_rx_cnt;
+static uint16_t g_adv_quiet_sec, g_adv_q_drop;
 static uint16_t g_bind_ok_cnt, g_bind_reject_cnt;
 static uint16_t g_scan_restart_cnt, g_scan_busy_cnt, g_scan_err_cnt;
 static uint16_t s_last_ok, s_last_rej, s_last_drop, s_last_rst, s_last_busy, s_last_err;
@@ -81,6 +87,7 @@ void SACN_DATA(uint8_t *,uint8_t,uint8_t *,uint16_t,int);
         "static void ObserverEventCB(gapRoleEvent_t *pEvent)",
         "void observer_adv_drain(uint16_t max_items)",
         "void observer_ble_stat_tick(void)",
+        "void observer_power_diag_tick(void)",
         "void SACN_DATA(uint8_t *addr, uint8_t EVENT, uint8_t *data, uint16_t data_len, int Rssi)"))
     ui = r'''
 #define UI_MSG_PARAM_SAVE_OK 1u
@@ -140,6 +147,11 @@ int main(void)
         SACN_DATA(addr,0,data,3,-40); observer_adv_drain(16);
     }
     assert(processed==71);
+    assert(g_collection_state_seen && g_collection_state==1 && g_collection_state_frames>140);
+    unsigned before=diagnostics;
+    for(unsigned i=0;i<9;i++) observer_power_diag_tick();
+    assert(diagnostics==before);
+    observer_power_diag_tick(); assert(diagnostics==before+1);
     puts("PASS: production BLE gates, late callbacks, queue wrap, watchdog and settings-save semantics");
     return 0;
 }

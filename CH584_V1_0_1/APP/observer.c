@@ -166,6 +166,9 @@ static uint32_t g_rsp_sec = 0;
 volatile uint8_t g_scan_mode   = SCAN_MODE_DATA;   /* 由 1 秒事件按当前页面切换 */
 volatile uint8_t g_scan_enable = 1;                /* Updated from committed controller state. */
 static uint8_t g_observer_ready = 0;
+static uint8_t g_collection_state = 1;
+static uint8_t g_collection_state_seen = 0;
+static uint32_t g_collection_state_frames = 0;
 
 /* ================= 采集期打印降噪开关（任务 A-3） =================
  * 逐通道 / 逐包的 PRINT 是采集期最大的软件开销：PRINT → printf → _write()
@@ -312,6 +315,10 @@ extern data_LIST Data_list1;
 void observer_set_collection_enabled(uint8_t state)
 {
     uint8_t enabled = (state == 1u);
+    bStatus_t scan_status = SUCCESS;
+    g_collection_state = state;
+    g_collection_state_seen = 1;
+    g_collection_state_frames++;
     if (enabled == g_scan_enable) return;
 
     /* Close the producer gate before cancellation can report completion. */
@@ -322,14 +329,17 @@ void observer_set_collection_enabled(uint8_t state)
     if (!enabled)
     {
         observer_round_clear(); /* Do not report a partial pre-stop round. */
-        if (g_observer_ready) GAPRole_ObserverCancelDiscovery();
+        if (g_observer_ready) scan_status = GAPRole_ObserverCancelDiscovery();
     }
     else if (g_observer_ready)
     {
-        GAPRole_ObserverStartDiscovery(DEFAULT_DISCOVERY_MODE,
-                                       DEFAULT_DISCOVERY_ACTIVE_SCAN,
-                                       DEFAULT_DISCOVERY_WHITE_LIST);
+        scan_status = GAPRole_ObserverStartDiscovery(DEFAULT_DISCOVERY_MODE,
+                                                     DEFAULT_DISCOVERY_ACTIVE_SCAN,
+                                                     DEFAULT_DISCOVERY_WHITE_LIST);
     }
+    PRINT("[BLE-PWR] change state=%u en=%u ready=%u scan_rc=%02X\r\n",
+          (unsigned int)state, (unsigned int)g_scan_enable,
+          (unsigned int)g_observer_ready, (unsigned int)scan_status);
 }
 
 void Observer_Init()
@@ -2036,6 +2046,20 @@ void observer_ble_stat_tick(void)
 #define BLE_DIAG_PERIOD_SEC   5     /* 每隔多少秒打印一行 */
 
 volatile uint32_t g_adv_rx_cnt = 0; /* 收到的广播包总数（纯诊断，不参与逻辑） */
+
+/* Low-rate main-loop diagnostics; no reset, flash or serial command side effects.
+ * rx counts accepted broadcasts, not completed sensor measurements. */
+void observer_power_diag_tick(void)
+{
+    static uint8_t seconds = 0;
+    if (++seconds < 10u) return;
+    seconds = 0;
+    PRINT("[BLE-PWR] known=%u state=%u en=%u ready=%u frames=%lu rx=%lu\r\n",
+          (unsigned int)g_collection_state_seen,
+          (unsigned int)g_collection_state, (unsigned int)g_scan_enable,
+          (unsigned int)g_observer_ready,
+          (unsigned long)g_collection_state_frames, (unsigned long)g_adv_rx_cnt);
+}
 
 void observer_ble_diag_tick(void)
 {
